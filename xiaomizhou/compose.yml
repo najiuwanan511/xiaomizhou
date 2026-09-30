@@ -1,0 +1,15 @@
+services:
+  xiaomizhou:
+    build: .
+    container_name: xiaomizhou
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    environment:
+      TZ: Asia/Shanghai
+      PORT: "8090"
+      DATA_DIR: /app/data
+    volumes:
+      - ./data:/app/data
+    security_opt:
+      - no-new-privileges:true
