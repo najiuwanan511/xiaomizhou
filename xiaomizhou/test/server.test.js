@@ -48,6 +48,13 @@ test('setup, plugin lifecycle, webhook, and rebate test mode', async () => {
     assert.equal((await fetch(base + '/api/backup')).status, 401);
     assert.equal((await request('/api/setup', 'POST', { username: 'admin', password: 'a-long-test-password' })).status, 200);
     assert.equal((await request('/api/bootstrap')).result.authenticated, true);
+    assert.equal((await request('/api/ai')).result.enabled, false);
+    assert.equal((await request('/api/ai', 'PUT', { enabled: true, provider: 'openai', model: 'gpt-4.1-mini', apiKey: '', systemPrompt: '', channels: ['qq'], groupPrefix: 'AI' })).status, 400);
+    assert.equal((await request('/api/ai', 'PUT', { enabled: false, provider: 'openai', model: 'gpt-4.1-mini', apiKey: 'test-key', systemPrompt: 'Test prompt', channels: ['qq'], groupPrefix: 'AI' })).status, 200);
+    assert.equal((await request('/api/ai')).result.apiKey, '********');
+    assert.equal((await request('/api/ai', 'PUT', { enabled: false, provider: 'openai', model: 'gpt-4.1-mini', apiKey: '********', systemPrompt: 'Test prompt', channels: ['qq'], groupPrefix: 'AI' })).status, 200);
+    assert.equal((await request('/api/ai/test', 'POST', { text: '' })).status, 400);
+    assert.equal((await request('/api/ai/history', 'DELETE')).status, 200);
     assert.equal((await request('/api/missing')).status, 404);
     assert.equal((await fetch(base + '/missing-file.js')).status, 404);
     const source = 'function handle(event, api) { if (event.text === "ping") api.reply("pong"); }';
@@ -177,6 +184,67 @@ test('QQ OneBot callback replies, forwards, deduplicates and retries failed send
     assert.equal((await request('/api/qq/events', group, token)).result.delivered, 1);
     assert.equal(calls.filter(call => call.path === '/send_group_msg' && call.body.group_id === 321).length, 2);
     assert.equal(calls.find(call => call.path === '/send_group_msg' && call.body.group_id === 456 && call.body.message === 'hello')?.body.message, 'hello');
+  } finally {
+    const exited = new Promise(resolve => child.once('exit', resolve));
+    child.kill();
+    await exited;
+    await new Promise(resolve => mock.close(resolve));
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('QQ messages use AI memory and plugin replies take precedence', async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), 'xiaomizhou-ai-test-'));
+  const port = await freePort();
+  const apiPort = await freePort();
+  const sent = [];
+  const mock = http.createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    sent.push(JSON.parse(raw));
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ status: 'ok', retcode: 0, data: {} }));
+  });
+  await new Promise(resolve => mock.listen(apiPort, '127.0.0.1', resolve));
+  const child = spawn(globalThis.process.execPath, ['--import', './ai-fetch-mock.fixture.js', 'server.js'], {
+    cwd: path.join(import.meta.dirname, '..'),
+    env: { ...globalThis.process.env, PORT: String(port), DATA_DIR: dataDir },
+    stdio: 'ignore'
+  });
+  const base = `http://127.0.0.1:${port}`;
+  let cookie = '';
+  async function request(endpoint, method = 'GET', payload, token) {
+    const response = await fetch(base + endpoint, { method, headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}), ...(token ? { 'X-Webhook-Token': token } : {}) }, body: payload ? JSON.stringify(payload) : undefined });
+    if (response.headers.get('set-cookie')) cookie = response.headers.get('set-cookie').split(';')[0];
+    return { status: response.status, result: await response.json() };
+  }
+  try {
+    let ready = false;
+    for (let i = 0; i < 100; i++) {
+      try { await fetch(base + '/api/bootstrap'); ready = true; break; } catch { await new Promise(resolve => setTimeout(resolve, 30)); }
+    }
+    assert.ok(ready);
+    assert.equal((await request('/api/setup', 'POST', { username: 'admin', password: 'a-long-test-password' })).status, 200);
+    const token = (await request('/api/settings')).result.webhookToken;
+    await request('/api/qq', 'PUT', { enabled: true, endpoint: `http://127.0.0.1:${apiPort}`, accessToken: '' });
+    await request('/api/ai', 'PUT', { enabled: true, provider: 'openai', model: 'gpt-4.1-mini', apiKey: 'test-key', systemPrompt: 'Test', channels: ['qq'], groupPrefix: 'AI' });
+    const event = id => ({ post_type: 'message', message_type: 'private', user_id: 123, self_id: 999, message_id: id, raw_message: `message-${id}` });
+    assert.equal((await request('/api/qq/events', 'POST', event(1), token)).result.delivered, 1);
+    assert.equal(sent.at(-1).message, 'AI-1');
+    assert.equal((await request('/api/qq/events', 'POST', event(2), token)).result.delivered, 1);
+    assert.equal(sent.at(-1).message, 'AI-3');
+    assert.equal((await request('/api/qq/events', 'POST', event(2), token)).result.delivered, 0);
+    assert.equal(sent.length, 2);
+    assert.equal((await request('/api/ai')).result.historyCount, 2);
+    const plugin = await request('/api/plugins', 'POST', { name: 'Override', source: 'function handle(event, api) { if (event.text === "plugin") api.reply("Plugin"); }' });
+    await request(`/api/plugins/${plugin.result.id}/toggle`, 'POST', {});
+    const third = { ...event(3), raw_message: 'plugin' };
+    const outcome = await request('/api/qq/events', 'POST', third, token);
+    assert.equal(outcome.result.actions.length, 1);
+    assert.equal(sent.at(-1).message, 'Plugin');
+    assert.equal((await request('/api/ai')).result.historyCount, 2);
+    assert.equal((await request('/api/ai/history', 'DELETE')).status, 200);
+    assert.equal((await request('/api/ai')).result.historyCount, 0);
   } finally {
     const exited = new Promise(resolve => child.once('exit', resolve));
     child.kill();

@@ -10,6 +10,7 @@ import { oneBotEvent, qqDestination, oneBotCall, sendQq } from './qq-bridge.js';
 import { createQqBotBridge, qqBotDestination } from './qqbot-bridge.js';
 import { createWecomBridge, wecomCallback, wecomDestination, wecomEvent } from './wecom-bridge.js';
 import { applyRebates } from './rebate-automation.js';
+import { aiConfig, conversationKey, generateAiReply, normalizeAiConfig, shouldAnswer } from './ai-brain.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.DATA_DIR || path.join(root, 'data');
@@ -25,6 +26,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY, time TEXT NOT NULL, level TEXT NOT NULL, area TEXT NOT NULL, message TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS qq_deliveries (message_id TEXT NOT NULL, action_index INTEGER NOT NULL, delivered_at TEXT NOT NULL, PRIMARY KEY(message_id, action_index));
   CREATE TABLE IF NOT EXISTS forward_rules (id INTEGER PRIMARY KEY, source_channel TEXT NOT NULL, source_chat_id TEXT NOT NULL, target_channel TEXT NOT NULL, target TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'all', enabled INTEGER NOT NULL DEFAULT 1);
+  CREATE TABLE IF NOT EXISTS ai_turns (delivery_key TEXT PRIMARY KEY, conversation_key TEXT NOT NULL, user_text TEXT NOT NULL, assistant_text TEXT NOT NULL, created_at TEXT NOT NULL);
+  CREATE INDEX IF NOT EXISTS ai_turns_conversation ON ai_turns(conversation_key, created_at DESC);
 `);
 
 const q = {
@@ -45,6 +48,10 @@ const putSetting = db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CO
 const insertLog = db.prepare('INSERT INTO logs(time,level,area,message) VALUES(?,?,?,?)');
 const deliveredQq = db.prepare('SELECT 1 FROM qq_deliveries WHERE message_id=? AND action_index=?');
 const markQqDelivered = db.prepare('INSERT OR IGNORE INTO qq_deliveries(message_id,action_index,delivered_at) VALUES(?,?,?)');
+const aiTurn = db.prepare('SELECT assistant_text FROM ai_turns WHERE delivery_key=?');
+const aiHistory = db.prepare('SELECT user_text,assistant_text FROM ai_turns WHERE conversation_key=? ORDER BY created_at DESC LIMIT 6');
+const saveAiTurn = db.prepare('INSERT OR IGNORE INTO ai_turns(delivery_key,conversation_key,user_text,assistant_text,created_at) VALUES(?,?,?,?,?)');
+const pruneAiTurns = db.prepare('DELETE FROM ai_turns WHERE created_at < ? OR delivery_key NOT IN (SELECT delivery_key FROM ai_turns ORDER BY created_at DESC LIMIT 5000)');
 const qqInFlight = new Set();
 const qqStatus = { lastEventAt: null, lastError: null };
 function log(level, area, message) {
@@ -150,6 +157,32 @@ function publicWecomConfig() {
   return { enabled: !!config.enabled, corpId: config.corpId || '', agentId: config.agentId || '', secret: config.secret ? '********' : '', token: config.token ? '********' : '', encodingAesKey: config.encodingAesKey ? '********' : '', ...wecomStatus };
 }
 const wecomBridge = createWecomBridge({ getConfig: wecomConfig });
+function getAiConfig() {
+  try { return aiConfig(JSON.parse(getSetting('ai.config', '{}'))); }
+  catch { return aiConfig(); }
+}
+function publicAiConfig() {
+  const config = getAiConfig();
+  return { ...config, apiKey: config.apiKey ? '********' : '', historyCount: db.prepare('SELECT count(*) AS count FROM ai_turns').get().count };
+}
+async function processIncoming(event) {
+  const result = await applyRebates(event, processEvent(event), rebateAutomation(), convert, platformFor, log);
+  const config = getAiConfig();
+  const prompt = shouldAnswer(event, result, config);
+  if (!prompt) return result;
+  try {
+    const key = event.deliveryKey || `test:${crypto.randomUUID()}`;
+    const conversation = conversationKey(event);
+    const answer = aiTurn.get(key)?.assistant_text || await generateAiReply(config, aiHistory.all(conversation).reverse(), prompt);
+    const action = { type: 'reply', text: answer, plugin: 'AI' };
+    Object.defineProperty(action, 'aiTurn', { value: { key, conversation, prompt, answer } });
+    result.actions.push(action);
+  } catch (error) {
+    log('error', 'ai', error.message);
+    result.errors.push({ plugin: 'AI', message: error.message });
+  }
+  return result;
+}
 async function deliverActions(event, result) {
   const errors = [];
   const warnings = [];
@@ -169,6 +202,10 @@ async function deliverActions(event, result) {
       else if (botTarget) await qqBotBridge.send(botTarget, action.text, event.channel === 'qqbot' && botTarget.type === event.messageType && botTarget.id === event.chatId ? event.messageId : '', index + 1);
       else await wecomBridge.send(wecomTarget, action.text);
       markQqDelivered.run(event.deliveryKey, index, now());
+      if (action.aiTurn) {
+        saveAiTurn.run(action.aiTurn.key, action.aiTurn.conversation, action.aiTurn.prompt, action.aiTurn.answer, now());
+        pruneAiTurns.run(new Date(Date.now() - 30 * 86400 * 1000).toISOString());
+      }
       delivered++;
     } catch (error) {
       errors.push(`Action ${index + 1}: ${error.message}`);
@@ -230,7 +267,7 @@ const qqBotBridge = createQqBotBridge({
     qqInFlight.add(event.deliveryKey);
     try {
       log('info', 'qqbot', `${event.messageType} message ${event.messageId} from ${event.chatId}`);
-      const result = await applyRebates(event, processEvent(event), rebateAutomation(), convert, platformFor, log);
+      const result = await processIncoming(event);
       await deliverActions(event, result);
     } finally { qqInFlight.delete(event.deliveryKey); }
   },
@@ -269,7 +306,7 @@ const server = http.createServer(async (req, res) => {
       const input = await body(req);
       const event = { channel: String(input.channel || ''), chatId: String(input.chatId || ''), userId: String(input.userId || ''), text: String(input.text || '').slice(0, 4000) };
       log('info', 'event', `${event.channel}: ${event.chatId}`);
-      return json(res, 200, await applyRebates(event, processEvent(event), rebateAutomation(), convert, platformFor, log));
+      return json(res, 200, await processIncoming(event));
     }
     if (req.method === 'POST' && pathname === '/api/qq/events') {
       if (!validToken(req.headers['x-webhook-token'] || new URL(req.url, 'http://localhost').searchParams.get('token'))) return fail(res, 401, 'Invalid webhook token');
@@ -282,7 +319,7 @@ const server = http.createServer(async (req, res) => {
       try {
         qqStatus.lastEventAt = now();
         log('info', 'qq', `${event.messageType} message ${event.messageId} from ${event.chatId}`);
-        const result = await applyRebates(event, processEvent(event), rebateAutomation(), convert, platformFor, log);
+        const result = await processIncoming(event);
         const delivery = await deliverActions(event, result);
         if (!delivery.errors.length) qqStatus.lastError = null;
         return json(res, delivery.errors.length ? 502 : 200, { ...result, ...delivery });
@@ -306,7 +343,7 @@ const server = http.createServer(async (req, res) => {
         log('info', 'wecom', `Message ${event.messageId} from ${event.userId}`);
         void (async () => {
           try {
-            const result = await applyRebates(event, processEvent(event), rebateAutomation(), convert, platformFor, log);
+            const result = await processIncoming(event);
             const delivery = await deliverActions(event, result);
             if (!delivery.errors.length) wecomStatus.lastError = null;
           } catch (error) { wecomStatus.lastError = error.message; log('error', 'wecom', error.message); }
@@ -343,9 +380,29 @@ const server = http.createServer(async (req, res) => {
         throw error;
       }
     }
-    if (req.method === 'GET' && pathname === '/api/overview') return json(res, 200, { pluginCount: q.plugins.all().length, enabledCount: q.enabled.all().length, recentLogs: q.logs.all().slice(0, 8), providers: Object.fromEntries(Object.keys(platforms).map(p => [p, rebateConfig(p).mode || 'test'])), qq: publicQqConfig(), qqbot: publicQqBotConfig(), wecom: publicWecomConfig() });
+    if (req.method === 'GET' && pathname === '/api/overview') return json(res, 200, { pluginCount: q.plugins.all().length, enabledCount: q.enabled.all().length, recentLogs: q.logs.all().slice(0, 8), providers: Object.fromEntries(Object.keys(platforms).map(p => [p, rebateConfig(p).mode || 'test'])), qq: publicQqConfig(), qqbot: publicQqBotConfig(), wecom: publicWecomConfig(), ai: { enabled: getAiConfig().enabled, provider: getAiConfig().provider, model: getAiConfig().model } });
     if (req.method === 'GET' && pathname === '/api/settings') return json(res, 200, { name: getSetting('name', 'xiaomizhou'), webhookToken: getSetting('webhookToken') });
     if (req.method === 'PUT' && pathname === '/api/settings') { const input = await body(req); putSetting.run('name', String(input.name || 'xiaomizhou').slice(0, 60)); return json(res, 200, { ok: true }); }
+    if (req.method === 'GET' && pathname === '/api/ai') return json(res, 200, publicAiConfig());
+    if (req.method === 'PUT' && pathname === '/api/ai') {
+      const config = normalizeAiConfig(await body(req), getAiConfig());
+      putSetting.run('ai.config', JSON.stringify(config));
+      log('info', 'ai', `${config.provider} ${config.enabled ? 'enabled' : 'disabled'}`);
+      return json(res, 200, publicAiConfig());
+    }
+    if (req.method === 'POST' && pathname === '/api/ai/test') {
+      const input = await body(req);
+      const text = String(input.text || '').trim();
+      if (!text || text.length > 4000) return fail(res, 400, 'Provide test text under 4000 characters');
+      const config = getAiConfig();
+      if (!config.apiKey) return fail(res, 400, 'Configure an AI API key first');
+      return json(res, 200, { reply: await generateAiReply(config, [], text) });
+    }
+    if (req.method === 'DELETE' && pathname === '/api/ai/history') {
+      db.prepare('DELETE FROM ai_turns').run();
+      log('info', 'ai', 'Conversation history cleared');
+      return json(res, 200, { ok: true });
+    }
     if (req.method === 'GET' && pathname === '/api/qq') return json(res, 200, publicQqConfig());
     if (req.method === 'PUT' && pathname === '/api/qq') {
       const input = await body(req);
