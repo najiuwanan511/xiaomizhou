@@ -82,7 +82,8 @@ test('launcher restores the image version when a pending release cannot start', 
       try { boot = await (await fetch(`http://127.0.0.1:${port}/api/bootstrap`)).json(); break; }
       catch { await new Promise(resolve => setTimeout(resolve, 100)); }
     }
-    assert.equal(boot?.version, '0.2.0');
+    const runningVersion = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'package.json'), 'utf8')).version;
+    assert.equal(boot?.version, runningVersion);
     assert.equal(fs.existsSync(path.join(dataDir, 'releases', 'current.json')), false);
   } finally {
     child.kill();

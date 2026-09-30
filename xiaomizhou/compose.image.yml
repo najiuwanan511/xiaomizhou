@@ -1,0 +1,18 @@
+services:
+  xiaomizhou:
+    image: ghcr.io/najiuwanan511/xiaomizhou:latest
+    container_name: xiaomizhou
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    environment:
+      TZ: Asia/Shanghai
+      PORT: "8090"
+      DATA_DIR: /app/data
+    volumes:
+      - xiaomizhou-data:/app/data
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  xiaomizhou-data:

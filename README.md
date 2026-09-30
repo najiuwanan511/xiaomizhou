@@ -4,7 +4,35 @@
 
 ## 飞牛 OS 安装
 
-适用于已安装 Docker、启用 SSH，并有 `git` 和 `docker compose` 命令的飞牛 OS。通过 SSH 登录飞牛后执行：
+推荐使用 Docker 图形界面，无需飞牛下载 GitHub 源码。在飞牛 Docker 应用中打开
+「Compose」→「新增项目」，项目名称填 `xiaomizhou`，粘贴下方配置并启动：
+
+```yaml
+services:
+  xiaomizhou:
+    image: ghcr.io/najiuwanan511/xiaomizhou:latest
+    container_name: xiaomizhou
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    environment:
+      TZ: Asia/Shanghai
+      PORT: "8090"
+      DATA_DIR: /app/data
+    volumes:
+      - xiaomizhou-data:/app/data
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  xiaomizhou-data:
+```
+
+飞牛需要能连接 `ghcr.io` 拉取镜像。数据库保存在 Docker 命名卷 `xiaomizhou-data` 中，
+删除或重建容器不会清除该卷；卸载项目时不要选择删除卷。完整配置也见
+[镜像 Compose 文件](xiaomizhou/compose.image.yml)。
+
+也可以从源码构建。适用于已安装 Docker、启用 SSH，并有 `git` 和 `docker compose` 命令的飞牛 OS：
 
 ```sh
 git clone https://github.com/najiuwanan511/xiaomizhou.git "$HOME/xiaomizhou"
@@ -13,14 +41,18 @@ docker compose up -d --build
 docker compose ps
 ```
 
-在同一局域网访问 `http://飞牛IP:8090`，首次进入时创建管理员账号。源码在
+两种方式启动后都在同一局域网访问 `http://飞牛IP:8090`，首次进入时创建管理员账号。源码方式的项目在
 `$HOME/xiaomizhou/`，数据库、配置和插件数据在 `$HOME/xiaomizhou/xiaomizhou/data/`。
-安装包通过 Docker 构建，首次构建需要飞牛能访问 Docker Hub 和 npm。详细步骤及 Docker
+源码方式首次构建需要飞牛能访问 Docker Hub 和 npm。详细步骤及 Docker
 图形界面安装方式见 [飞牛 OS 部署说明](xiaomizhou/README.md#飞牛-os-安装与维护)。
 
 ## 更新命令
 
-在飞牛 SSH 中执行以下命令，适用于代码或 Docker 依赖有变化时：
+图形界面镜像安装：在飞牛 Docker 中拉取 `ghcr.io/najiuwanan511/xiaomizhou:latest`，
+然后重新创建该 Compose 项目的容器；保留 `xiaomizhou-data` 卷。依赖未变化的发布版也可在
+后台「在线更新」页安装。
+
+源码安装：在飞牛 SSH 中执行以下命令，适用于代码或 Docker 依赖有变化时：
 
 ```sh
 cd "$HOME/xiaomizhou"
@@ -34,7 +66,10 @@ docker compose up -d --build
 
 ## 卸载命令
 
-在飞牛 SSH 中执行以下命令，停止并移除容器及其本地构建镜像：
+图形界面镜像安装：在飞牛 Docker 中停止并删除 `xiaomizhou` Compose 项目；默认保留
+`xiaomizhou-data` 卷。彻底删除数据前，请先下载数据库备份。
+
+源码安装：在飞牛 SSH 中执行以下命令，停止并移除容器及其本地构建镜像：
 
 ```sh
 cd "$HOME/xiaomizhou/xiaomizhou"

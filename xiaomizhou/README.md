@@ -22,6 +22,21 @@ node server.js
 
 ## 飞牛 OS 安装与维护
 
+### Docker 图形界面安装
+
+在飞牛 Docker 应用的「Compose」中点击「新增项目」，项目名称填 `xiaomizhou`，
+将 [compose.image.yml](compose.image.yml) 的内容粘贴到 Compose 编辑框并启动。
+此方式直接拉取 `ghcr.io/najiuwanan511/xiaomizhou:latest`，无需在飞牛上下载源码、
+安装 Git 或构建 Node 镜像。NAS 仍需能访问 `ghcr.io`。数据库存于 Docker 命名卷
+`xiaomizhou-data`，删除容器时请保留卷。启动后访问 `http://飞牛IP:8090`。
+
+如果 8090 已被占用，只改 Compose 的端口映射左侧数字（如 `"8091:8090"`），
+再访问 `http://飞牛IP:8091`。镜像更新时重新拉取 `latest` 并重新创建容器，
+或在依赖未变化时使用后台「在线更新」。卸载时删除 Compose 项目；需要保留账号及配置
+就不要删除命名卷。镜像首次发布后需在 GitHub Packages 设为 Public 才能免登录拉取。
+
+### SSH 源码安装
+
 1. 在飞牛 OS 应用中心安装并启动 Docker，确认飞牛有足够空间，并在系统设置中启用 SSH。
    在电脑终端运行 `ssh 飞牛用户名@飞牛IP` 登录；确认 `docker compose version` 和
    `git --version` 都能正常执行。运行 Docker 命令的账号还需要有 Docker 权限。

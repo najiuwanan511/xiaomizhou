@@ -4,6 +4,7 @@ on:
     tags: ['v*']
 permissions:
   contents: write
+  packages: write
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -17,6 +18,16 @@ jobs:
         run: |
           node -e "const p=require('./package.json'); if ('v'+p.version !== process.env.GITHUB_REF_NAME) process.exit(1)"
           node scripts/bundle-release.js release
+      - name: Build and publish container image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            -t "$image:$GITHUB_REF_NAME" -t "$image:latest" ./xiaomizhou
+          docker push "$image:$GITHUB_REF_NAME"
+          docker push "$image:latest"
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
