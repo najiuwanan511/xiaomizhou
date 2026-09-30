@@ -17,9 +17,53 @@ node server.js
 
 浏览器访问 `http://localhost:8090`，首次访问设置管理员密码（至少 12 位）。数据库
 存于 `xiaomizhou/data/ownman.db`，请备份整个 `data/`。数据库文件名保留以兼容已有安装。
-飞牛 OS 可在该目录创建 Docker
-项目，使用 `compose.yml` 构建并启动，然后访问 `http://飞牛IP:8090`。请勿将 8090
-直接映射到公网；账号密码、Webhook 令牌及联盟密钥保存在本地数据库中。
+飞牛 OS 的安装和维护命令见下文。请勿将 8090 直接映射到公网；账号密码、Webhook
+令牌及联盟密钥保存在本地数据库中。
+
+## 飞牛 OS 安装与维护
+
+1. 在飞牛 OS 应用中心安装并启动 Docker，确认飞牛有足够空间，并在系统设置中启用 SSH。
+   在电脑终端运行 `ssh 飞牛用户名@飞牛IP` 登录；确认 `docker compose version` 和
+   `git --version` 都能正常执行。运行 Docker 命令的账号还需要有 Docker 权限。
+2. 在飞牛 SSH 中安装：
+
+   ```sh
+   git clone https://github.com/najiuwanan511/xiaomizhou.git "$HOME/xiaomizhou"
+   cd "$HOME/xiaomizhou/xiaomizhou"
+   docker compose up -d --build
+   docker compose ps
+   ```
+
+3. 在同一局域网的浏览器打开 `http://飞牛IP:8090`，创建管理员账号。项目把宿主机的
+   `./data` 挂载到容器 `/app/data`，重建容器时会保留数据库和在线更新文件。不要把管理端口
+   直接暴露到公网。
+
+如果使用飞牛 Docker 图形界面，可从 GitHub 下载源码 ZIP 并解压，创建 Compose 项目时选择
+源码内的 `xiaomizhou/compose.yml`，将项目工作目录设为该文件所在的 `xiaomizhou` 目录，
+再构建并启动。这样 `./data` 才会指向正确的数据目录。若宿主机 8090 端口已被占用，
+把 `compose.yml` 的 `"8090:8090"` 改成 `"其他空闲端口:8090"`，浏览器访问相应端口。
+使用 ZIP 安装时无法运行下方的 `git pull`；更新需下载新版源码、保留原 `data/`，
+再用原项目重建容器。后台「在线更新」适用于依赖未变化的正式发布版。
+
+升级代码或 Docker 依赖时，在飞牛 SSH 中执行：
+
+```sh
+cd "$HOME/xiaomizhou"
+git pull --ff-only
+cd xiaomizhou
+docker compose up -d --build
+```
+
+需要查看启动日志时执行 `docker compose logs --tail=100 xiaomizhou`。卸载服务和本地构建镜像：
+
+```sh
+cd "$HOME/xiaomizhou/xiaomizhou"
+docker compose down --rmi local
+```
+
+卸载命令保留 `data/` 和源码。若要彻底删除，先下载数据库备份，再通过文件管理器删除
+`$HOME/xiaomizhou/`。如果安装时选择了其他目录，上述命令中的 `$HOME/xiaomizhou` 要
+替换成实际路径；不要删除其他 Docker 项目的数据目录。
 
 ## 已实现
 
