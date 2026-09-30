@@ -63,10 +63,10 @@ test('install verifies checksum, backs up data, and switches version only on suc
 
 test('launcher restores the image version when a pending release cannot start', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaomizhou-launcher-'));
-  const releaseDir = path.join(dataDir, 'releases', 'v0.3.0');
+  const releaseDir = path.join(dataDir, 'releases', 'v0.4.0');
   fs.mkdirSync(releaseDir, { recursive: true });
   fs.writeFileSync(path.join(releaseDir, 'server.js'), 'process.exit(1);');
-  fs.writeFileSync(path.join(dataDir, 'releases', 'current.json'), JSON.stringify({ version: '0.3.0', previousVersion: '0.2.0', pending: true }));
+  fs.writeFileSync(path.join(dataDir, 'releases', 'current.json'), JSON.stringify({ version: '0.4.0', previousVersion: '0.2.0', pending: true }));
   const listener = net.createServer();
   await new Promise(resolve => listener.listen(0, '127.0.0.1', resolve));
   const port = listener.address().port;

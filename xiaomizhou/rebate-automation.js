@@ -1,3 +1,104 @@
+import crypto from 'node:crypto';
+
+
+const jdEndpoint = 'https://router.jd.com/api';
+const taobaoEndpoint = 'https://eco.taobao.com/router/rest';
+
+function timestamp(date) {
+  return new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
+  }).format(date);
+}
+
+function sortedFields(fields) {
+  return Object.keys(fields).sort().map(key => `${key}${fields[key]}`).join('');
+}
+
+export function signJd(fields, secret) {
+  return crypto.createHash('md5').update(`${secret}${sortedFields(fields)}${secret}`, 'utf8').digest('hex').toUpperCase();
+}
+
+export function signTaobao(fields, secret) {
+  return crypto.createHmac('md5', secret).update(sortedFields(fields), 'utf8').digest('hex').toUpperCase();
+}
+
+function required(config, fields) {
+  for (const [field, label] of fields) {
+    if (!String(config[field] || '').trim()) throw Object.assign(new Error(`${label} is required`), { status: 400 });
+  }
+}
+
+function httpsUrl(value) {
+  try { const url = new URL(value); return url.protocol === 'https:' && url.hostname ? url.href : null; }
+  catch { return null; }
+}
+
+async function postForm(endpoint, fields, fetcher) {
+  const response = await fetcher(endpoint, {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8' },
+    body: new URLSearchParams(fields), signal: AbortSignal.timeout(10000), redirect: 'error'
+  });
+  if (!response.ok) throw new Error(`Affiliate API returned HTTP ${response.status}`);
+  return response.json();
+}
+
+function jdResult(payload, method) {
+  if (payload.error_response) throw new Error(`JD API ${payload.error_response.code || 'error'}: ${payload.error_response.zh_desc || payload.error_response.en_desc || 'request failed'}`);
+  const wrapper = payload[method.replaceAll('.', '_') + '_response'];
+  if (!wrapper) throw new Error('JD API returned an unexpected response');
+  let result;
+  try { result = typeof wrapper.result === 'string' ? JSON.parse(wrapper.result) : wrapper.result; }
+  catch { throw new Error('JD API returned invalid result JSON'); }
+  if ((wrapper.code != null && String(wrapper.code) !== '0') || String(result?.code) !== '200') throw new Error(`JD API ${result?.code || wrapper.code || 'error'}: ${result?.message || wrapper.message || 'conversion failed'}`);
+  const url = httpsUrl(result?.data?.clickURL);
+  if (!url) throw new Error('JD API returned no HTTPS promotion URL');
+  return url;
+}
+
+function taobaoResult(payload) {
+  if (payload.error_response) throw new Error(`Taobao API ${payload.error_response.code || 'error'}: ${payload.error_response.sub_msg || payload.error_response.msg || 'request failed'}`);
+  const data = payload.tbk_dg_general_link_convert_response?.data;
+  const items = data?.material_url_list?.material_url_list;
+  const item = Array.isArray(items) ? items[0] : items;
+  if (!item) throw new Error('Taobao API returned no converted material');
+  if (item.code != null && String(item.code) !== '0') throw new Error(`Taobao API ${item.code}: ${item.msg || 'conversion failed'}`);
+  const links = item.link_info_dto;
+  const url = httpsUrl(links?.coupon_short_url) || httpsUrl(links?.coupon_long_url) || httpsUrl(links?.cps_short_url) || httpsUrl(links?.cps_long_url);
+  if (!url) throw new Error('Taobao API returned no HTTPS promotion URL');
+  return url;
+}
+
+export async function convertOfficial(platform, url, config, { fetcher = fetch, date = new Date() } = {}) {
+  if (platform === 'jd') {
+    required(config, [['appKey', 'JD AppKey'], ['appSecret', 'JD AppSecret']]);
+    const site = config.jdMethod === 'site';
+    if (site && !/^\d+$/.test(config.siteId || '')) throw Object.assign(new Error('JD site ID must be numeric'), { status: 400 });
+    const method = site ? 'jd.union.open.promotion.common.get' : 'jd.union.open.promotion.bysubunionid.get';
+    if (config.positionId && (!/^\d+$/.test(config.positionId) || !Number.isSafeInteger(Number(config.positionId)))) throw Object.assign(new Error('JD position ID must be a safe integer'), { status: 400 });
+    const request = { materialId: url, ...(site ? { siteId: config.siteId } : {}), ...(config.positionId ? { positionId: Number(config.positionId) } : {}) };
+    const fields = {
+      app_key: config.appKey, method, format: 'json',
+      sign_method: 'md5', timestamp: timestamp(date), v: '1.0',
+      param_json: JSON.stringify({ promotionCodeReq: request })
+    };
+    fields.sign = signJd(fields, config.appSecret);
+    return jdResult(await postForm(jdEndpoint, fields, fetcher), method);
+  }
+  if (platform === 'taobao') {
+    required(config, [['appKey', 'Taobao AppKey'], ['appSecret', 'Taobao AppSecret'], ['adzoneId', 'Taobao adzone ID']]);
+    if (!/^\d+$/.test(config.adzoneId)) throw Object.assign(new Error('Taobao adzone ID must be numeric'), { status: 400 });
+    const fields = {
+      app_key: config.appKey, method: 'taobao.tbk.dg.general.link.convert', format: 'json',
+      sign_method: 'hmac', timestamp: timestamp(date), v: '2.0', adzone_id: config.adzoneId,
+      material_list: url, required_link_type: 'coupon_short_url,coupon_long_url,cps_short_url,cps_long_url'
+    };
+    fields.sign = signTaobao(fields, config.appSecret);
+    return taobaoResult(await postForm(taobaoEndpoint, fields, fetcher));
+  }
+  throw Object.assign(new Error('Official connector is unavailable for this platform'), { status: 400 });
+}
+
 export function productUrls(text, platformFor) {
   const found = String(text).match(/https?:\/\/[^\s<>"'\u3000]+/gi) || [];
   return [...new Set(found.map(url => url.replace(/[.,!?:;\u3002\uff0c\uff01\uff1f\uff1a\uff1b)\]\u3011]+$/u, '')).filter(url => platformFor(url)))].slice(0, 5);

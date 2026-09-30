@@ -99,6 +99,14 @@ test('setup, plugin lifecycle, webhook, and rebate test mode', async () => {
     const rebate = await request('/api/rebates/convert', 'POST', { url: 'https://item.jd.com/123.html' });
     assert.equal(rebate.result.mode, 'test');
     assert.equal(rebate.result.resultUrl, null);
+    assert.equal((await request('/api/rebates', 'PUT', { platform: 'jd', mode: 'live', provider: 'official', appKey: 'app-key', appSecret: 'secret', siteId: '1234' })).status, 200);
+    const savedJd = (await request('/api/rebates')).result.providers.jd;
+    assert.equal(savedJd.appSecret, '********');
+    assert.equal(savedJd.appKey, 'app-key');
+    assert.equal((await request('/api/rebates', 'PUT', { platform: 'jd', mode: 'live', provider: 'official', appKey: 'app-key', appSecret: '********', siteId: '1234' })).status, 200);
+    assert.equal((await request('/api/rebates', 'PUT', { platform: 'taobao', mode: 'live', provider: 'official', appKey: 'app-key', appSecret: 'secret', adzoneId: 'bad' })).status, 400);
+    assert.equal((await request('/api/rebates', 'PUT', { platform: 'pdd', mode: 'live', provider: 'official', appKey: 'app-key', appSecret: 'secret' })).status, 400);
+    assert.equal((await request('/api/rebates', 'PUT', { platform: 'jd', mode: 'test', provider: 'official', appKey: 'app-key', appSecret: '********', siteId: '1234' })).status, 200);
     assert.equal((await request('/api/rebates/automation', 'PUT', { enabled: true, reply: true })).result.enabled, true);
     const automatic = await request('/api/events', 'POST', { channel: 'qq', chatId: '123', text: '看看 https://item.jd.com/123.html。' }, { 'X-Webhook-Token': token });
     assert.equal(automatic.result.conversions[0].mode, 'test');
