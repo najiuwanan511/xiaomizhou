@@ -5,8 +5,8 @@ const starter = `function handle(event, api) {
     api.reply('你好，我是你的机器人。');
   }
 }`;
-const icons = { overview: 'layout-dashboard', ai: 'brain-circuit', plugins: 'blocks', editor: 'code-xml', qq: 'message-circle', qqbot: 'bot', weixin: 'messages-square', forwards: 'forward', rebates: 'link-2', logs: 'scroll-text', settings: 'settings-2' };
-const names = { overview: '概览', ai: 'AI 大脑', plugins: '插件管理', editor: '本地开发', qq: '个人 QQ', qqbot: 'QQ 机器人', weixin: '微信接入', forwards: '转发规则', rebates: '返利转链', logs: '运行日志', settings: '系统设置' };
+const icons = { overview: 'layout-dashboard', ai: 'brain-circuit', plugins: 'blocks', editor: 'code-xml', qq: 'message-circle', qqbot: 'bot', weixin: 'messages-square', forwards: 'forward', rebates: 'link-2', logs: 'scroll-text', settings: 'settings-2', updates: 'download' };
+const names = { overview: '概览', ai: 'AI 大脑', plugins: '插件管理', editor: '本地开发', qq: '个人 QQ', qqbot: 'QQ 机器人', weixin: '微信接入', forwards: '转发规则', rebates: '返利转链', logs: '运行日志', settings: '系统设置', updates: '在线更新' };
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const icon = name => `<i data-lucide="${name}" aria-hidden="true"></i>`;
 function iconsReady() { window.lucide?.createIcons(); }
@@ -19,7 +19,7 @@ async function api(path, options = {}) {
 }
 function error(message) { const target = document.querySelector('#error'); if (target) target.innerHTML = `<div class="alert">${escapeHtml(message)}</div>`; else toast(message); }
 function shell(content) {
-  app.innerHTML = `<div class="shell"><aside class="sidebar"><div class="brand"><div class="brand-mark">${icon('bot')}</div><span>${escapeHtml(state.bootstrap.name)}</span></div><nav class="nav"><div class="nav-label">控制台</div>${Object.entries(names).map(([key, value]) => `<button type="button" data-page="${key}" class="${state.page === key ? 'active' : ''}" title="${value}">${icon(icons[key])}<span>${value}</span></button>`).join('')}</nav><div class="sidebar-foot">xiaomizhou v0.1<br>独立运行</div></aside><div class="main"><header class="topbar"><span class="topbar-title">${names[state.page]}</span><div class="top-actions"><span class="status"><span class="dot"></span>服务运行中</span><button class="icon-btn" id="logout" title="退出登录" aria-label="退出登录">${icon('log-out')}</button></div></header><main class="content">${content}</main></div></div>`;
+  app.innerHTML = `<div class="shell"><aside class="sidebar"><div class="brand"><div class="brand-mark">${icon('bot')}</div><span>${escapeHtml(state.bootstrap.name)}</span></div><nav class="nav"><div class="nav-label">控制台</div>${Object.entries(names).map(([key, value]) => `<button type="button" data-page="${key}" class="${state.page === key ? 'active' : ''}" title="${value}">${icon(icons[key])}<span>${value}</span></button>`).join('')}</nav><div class="sidebar-foot">xiaomizhou v${escapeHtml(state.bootstrap.version)}<br>独立运行</div></aside><div class="main"><header class="topbar"><span class="topbar-title">${names[state.page]}</span><div class="top-actions"><span class="status"><span class="dot"></span>服务运行中</span><button class="icon-btn" id="logout" title="退出登录" aria-label="退出登录">${icon('log-out')}</button></div></header><main class="content">${content}</main></div></div>`;
   document.querySelectorAll('[data-page]').forEach(button => button.onclick = () => { state.page = button.dataset.page; render(); });
   document.querySelector('#logout').onclick = async () => { await api('/logout', { method: 'POST' }); state.bootstrap.authenticated = false; render(); };
   iconsReady();
@@ -122,5 +122,39 @@ async function settings() {
   document.querySelector('#copy-token').onclick = async () => { await navigator.clipboard.writeText(data.webhookToken); toast('令牌已复制'); };
   iconsReady();
 }
-async function render() { try { if (!state.bootstrap) state.bootstrap = await api('/bootstrap'); if (!state.bootstrap.authenticated) return authView(); await ({ overview, ai, plugins, editor, qq, qqbot, weixin, forwards, rebates, logs, settings }[state.page] || overview)(); } catch(e) { app.innerHTML = `<div class="auth-wrap"><div class="auth"><h1>无法加载控制台</h1><p>${escapeHtml(e.message)}</p><button class="btn" onclick="location.reload()">重试</button></div></div>`; } }
+async function updates() {
+  const status = await api('/updates');
+  shell(`${heading('在线更新', '查看 GitHub 发布版本并安装更新')}<div class="panel pad"><div class="section-head"><h2>当前版本</h2><span class="pill">v${escapeHtml(status.currentVersion)}</span></div><p class="muted">${status.managed ? '由 Docker 启动器管理，安装后会自动重启服务。' : '当前启动方式不支持后台安装。请先按文档重建 Docker 容器。'}</p><button class="btn" id="check-update">${icon('refresh-cw')} 检查更新</button><div id="update-result" style="margin-top:18px"></div></div>`);
+  document.querySelector('#check-update').onclick = async () => {
+    const button = document.querySelector('#check-update');
+    const result = document.querySelector('#update-result');
+    button.disabled = true;
+    result.textContent = '正在检查 GitHub Releases…';
+    try {
+      const info = await api('/updates/check', { method: 'POST' });
+      result.innerHTML = `<div class="section-head"><h2>${info.available ? `发现 v${escapeHtml(info.latestVersion)}` : '已是最新版本'}</h2><a href="${escapeHtml(info.url)}" target="_blank" rel="noopener noreferrer">查看发布页 ${icon('arrow-up-right')}</a></div>${info.notes ? `<p class="release-notes">${escapeHtml(info.notes)}</p>` : ''}${info.available && status.managed ? `<button class="btn primary" id="install-update">${icon('download')} 安装 v${escapeHtml(info.latestVersion)}</button>` : ''}`;
+      if (info.available && status.managed) document.querySelector('#install-update').onclick = async () => {
+        if (!confirm(`安装 v${info.latestVersion}？系统会先备份数据库，然后短暂重启。`)) return;
+        const install = document.querySelector('#install-update');
+        install.disabled = true;
+        install.textContent = '正在校验并安装…';
+        try {
+          await api('/updates/install', { method: 'POST', body: { version: info.latestVersion } });
+          result.textContent = '安装完成，正在重启服务…';
+          const timer = setInterval(async () => {
+            try {
+              const next = await api('/bootstrap');
+              if (next.version === info.latestVersion) { clearInterval(timer); location.reload(); }
+            } catch { /* Service is restarting. */ }
+          }, 1500);
+          setTimeout(() => clearInterval(timer), 60000);
+        } catch(e) { install.disabled = false; install.textContent = '重试安装'; toast(e.message); }
+      };
+      iconsReady();
+    } catch(e) { result.textContent = e.message; }
+    finally { button.disabled = false; }
+  };
+  iconsReady();
+}
+async function render() { try { if (!state.bootstrap) state.bootstrap = await api('/bootstrap'); if (!state.bootstrap.authenticated) return authView(); await ({ overview, ai, plugins, editor, qq, qqbot, weixin, forwards, rebates, logs, settings, updates }[state.page] || overview)(); } catch(e) { app.innerHTML = `<div class="auth-wrap"><div class="auth"><h1>无法加载控制台</h1><p>${escapeHtml(e.message)}</p><button class="btn" onclick="location.reload()">重试</button></div></div>`; } }
 render();

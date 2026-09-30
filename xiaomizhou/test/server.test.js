@@ -45,9 +45,12 @@ test('setup, plugin lifecycle, webhook, and rebate test mode', async () => {
     assert.ok(ready, 'server did not start');
     assert.equal((await request('/api/bootstrap')).result.setup, true);
     assert.equal((await request('/api/plugins')).status, 401);
+    assert.equal((await request('/api/updates')).status, 401);
     assert.equal((await fetch(base + '/api/backup')).status, 401);
     assert.equal((await request('/api/setup', 'POST', { username: 'admin', password: 'a-long-test-password' })).status, 200);
     assert.equal((await request('/api/bootstrap')).result.authenticated, true);
+    assert.equal((await request('/api/updates')).result.managed, false);
+    assert.equal((await request('/api/updates/install', 'POST', { version: '0.3.0' })).status, 409);
     assert.equal((await request('/api/ai')).result.enabled, false);
     assert.equal((await request('/api/ai', 'PUT', { enabled: true, provider: 'openai', model: 'gpt-4.1-mini', apiKey: '', systemPrompt: '', channels: ['qq'], groupPrefix: 'AI' })).status, 400);
     assert.equal((await request('/api/ai', 'PUT', { enabled: false, provider: 'openai', model: 'gpt-4.1-mini', apiKey: 'test-key', systemPrompt: 'Test prompt', channels: ['qq'], groupPrefix: 'AI' })).status, 200);

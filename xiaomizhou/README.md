@@ -141,6 +141,29 @@ xiaomizhou 适配器安装。下一阶段需要选择独立运行的 iLink/ClawB
 将备份文件替换 `data/ownman.db`，移走旧数据库旁的 `ownman.db-wal` 和
 `ownman.db-shm` 文件后再启动服务。不要在服务运行时直接覆盖数据库文件。
 
+## 在线更新与发布
+
+首次启用在线更新时，需从 `v0.2.0` 或更新的源码在飞牛 Docker 项目中重建并启动一次：
+
+```sh
+cd xiaomizhou
+docker compose up -d --build
+```
+
+此后在后台「在线更新」页检查 GitHub Releases，核对更新说明，再点击安装。服务只接受
+`najiuwanan511/xiaomizhou` 仓库的正式发布包，下载后校验 SHA-256，并校验包内文件列表。
+安装前数据库快照保存在 `data/releases/before-v版本-时间.db`；运行代码放在
+`data/releases/v版本/`，因此容器重建不会丢失已安装的较新版本。启动器确认新版能响应
+`/api/bootstrap` 后完成切换；若新版启动失败，会恢复上一版代码。数据库不会自动回滚。
+
+在线更新只支持 Docker 启动器和依赖未变化的版本。直接运行 `node server.js` 可以检查版本，
+但需手动更新代码并重启；如果发布版更改了 npm 依赖或 Dockerfile，后台会提示重建容器。
+重建后的镜像版本若比已安装的在线版本新，会自动运行镜像版本。
+
+维护者每次升级时先修改 `package.json` 版本，推送代码后创建同名 `v版本` 标签并推送。
+GitHub Actions 会校验标签与版本一致，生成带 SHA-256 校验文件的发布包，并在 GitHub
+Releases 创建对应版本。不要手动修改已经发布的标签或资产。
+
 ## 验证
 
 ```sh

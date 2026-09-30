@@ -11,10 +11,13 @@ import { createQqBotBridge, qqBotDestination } from './qqbot-bridge.js';
 import { createWecomBridge, wecomCallback, wecomDestination, wecomEvent } from './wecom-bridge.js';
 import { applyRebates } from './rebate-automation.js';
 import { aiConfig, conversationKey, generateAiReply, normalizeAiConfig, shouldAnswer } from './ai-brain.js';
+import { checkUpdate, installUpdate } from './update-manager.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.DATA_DIR || path.join(root, 'data');
 const port = Number(process.env.PORT || 8090);
+const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+let installingUpdate = false;
 fs.mkdirSync(dataDir, { recursive: true });
 const db = new DatabaseSync(path.join(dataDir, 'ownman.db'));
 db.exec(`
@@ -285,7 +288,7 @@ const server = http.createServer(async (req, res) => {
   const pathname = new URL(req.url, 'http://localhost').pathname;
   try {
     if (!pathname.startsWith('/api/')) return serveStatic(req, res, pathname);
-    if (req.method === 'GET' && pathname === '/api/bootstrap') return json(res, 200, { setup: q.users.get().count === 0, authenticated: !!authorized(req), name: getSetting('name', 'xiaomizhou') });
+    if (req.method === 'GET' && pathname === '/api/bootstrap') return json(res, 200, { setup: q.users.get().count === 0, authenticated: !!authorized(req), name: getSetting('name', 'xiaomizhou'), version });
     if (req.method === 'POST' && pathname === '/api/setup') {
       if (q.users.get().count) return fail(res, 409, 'Already initialized');
       const input = await body(req);
@@ -354,6 +357,21 @@ const server = http.createServer(async (req, res) => {
     }
     if (!authorized(req)) return fail(res, 401, 'Sign in required');
     if (req.method === 'POST' && pathname === '/api/logout') return json(res, 200, { ok: true }, { 'Set-Cookie': 'ownman_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' });
+    if (req.method === 'GET' && pathname === '/api/updates') return json(res, 200, { currentVersion: version, managed: typeof process.send === 'function' && process.env.XIAOMIZHOU_MANAGED === '1', installing: installingUpdate });
+    if (req.method === 'POST' && pathname === '/api/updates/check') return json(res, 200, await checkUpdate(version));
+    if (req.method === 'POST' && pathname === '/api/updates/install') {
+      if (typeof process.send !== 'function' || process.env.XIAOMIZHOU_MANAGED !== '1') return fail(res, 409, 'Online installation requires the Docker launcher; rebuild and restart the container first');
+      if (installingUpdate) return fail(res, 409, 'An update is already being installed');
+      const input = await body(req);
+      installingUpdate = true;
+      try {
+        const info = await installUpdate({ currentVersion: version, expectedVersion: String(input.version || ''), root, dataDir, backup: target => backup(db, target) });
+        log('info', 'update', `Installed v${info.latestVersion}; restarting`);
+        json(res, 200, { ok: true, version: info.latestVersion });
+        setTimeout(() => { process.send?.({ type: 'update-installed' }); setTimeout(() => process.exit(0), 200); }, 200);
+        return;
+      } finally { installingUpdate = false; }
+    }
     if (req.method === 'GET' && pathname === '/api/backup') {
       const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'ownman-backup-'));
       const file = path.join(temporary, 'ownman.db');
