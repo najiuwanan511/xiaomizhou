@@ -176,6 +176,8 @@ xiaomizhou 适配器安装。下一阶段需要选择独立运行的 iLink/ClawB
 
 ## 返利自动转链
 
+京粉与淘宝联盟的申请、字段填写和单链接验收步骤见[对接教程](docs/affiliate-jd-taobao.md)。
+
 在「返利转链」页选择平台和接口类型。京东官方接口填写联盟应用的 AppKey、AppSecret。
 默认的 QQ / 微信社交媒体模式调用 `jd.union.open.promotion.bysubunionid.get`，需向京东联盟
 申请接口权限，推广位 ID 可选。网站 / APP 模式调用 `jd.union.open.promotion.common.get`，
