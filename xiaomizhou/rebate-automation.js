@@ -83,10 +83,10 @@ export function imageUrl(value) {
   } catch { return null; }
 }
 
-async function postForm(endpoint, fields, fetcher) {
+async function postForm(endpoint, fields, fetcher, timeoutMs = 10000) {
   const response = await fetcher(endpoint, {
     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8' },
-    body: new URLSearchParams(fields), signal: AbortSignal.timeout(10000), redirect: 'error'
+    body: new URLSearchParams(fields), signal: AbortSignal.timeout(timeoutMs), redirect: 'error'
   });
   if (!response.ok) throw new Error(`Affiliate API returned HTTP ${response.status}`);
   return response.json();
@@ -150,20 +150,34 @@ async function convertZhetaokeTaobao(url, config, { fetcher = fetch } = {}) {
   required(config, [['ztkAppKey', '折淘客 AppKey'], ['ztkSid', '折淘客授权 SID'], ['ztkPid', '淘宝完整 PID']]);
   if (!/^mm_\d+_\d+_\d+$/.test(config.ztkPid)) throw Object.assign(new Error('淘宝 PID 须为完整的 mm_数字_数字_数字 格式'), { status: 400 });
   if (config.ztkRelationId && !/^\d+$/.test(config.ztkRelationId)) throw Object.assign(new Error('渠道关系 ID（RID）须为数字'), { status: 400 });
-  const payload = await postForm(zhetaokeTaobaoEndpoint, {
-    appkey: config.ztkAppKey, sid: config.ztkSid, pid: config.ztkPid,
-    tkl: url, signurl: '5', ...(config.ztkRelationId ? { relation_id: config.ztkRelationId } : {})
-  }, fetcher);
+  const signurl = String(config.ztkTaobaoSignurl ?? '5');
+  if (!['3', '4', '5'].includes(signurl)) throw Object.assign(new Error('折淘客转链结果类型须为 3、4 或 5'), { status: 400 });
+  let payload;
+  try {
+    payload = await postForm(zhetaokeTaobaoEndpoint, {
+      appkey: config.ztkAppKey, sid: config.ztkSid, pid: config.ztkPid,
+      tkl: url, signurl, ...(config.ztkRelationId ? { relation_id: config.ztkRelationId } : {})
+    }, fetcher, 20000);
+  } catch (error) {
+    const code = error.cause?.code || error.code || error.name;
+    if (/timeout|abort|ETIMEDOUT/i.test(code)) throw new Error('折淘客请求超时（20 秒）；请检查飞牛容器到 api.zhetaoke.com:10001 的网络。可切换基础转链后重试。');
+    if (error instanceof SyntaxError) throw new Error('折淘客返回的不是有效 JSON；请检查接口调用日志和网络代理，确认未返回登录页或拦截页。');
+    const detail = cleanField(code, 80);
+    throw new Error(`折淘客连接失败（${detail}）：${cleanField(error.message, 160)}；请检查 api.zhetaoke.com:10001 的网络、TLS 和代理。`);
+  }
   if (payload?.error_response) {
     const error = payload.error_response;
-    throw new Error(`折淘客 ${error.code || 'error'}: ${error.sub_msg || error.msg || '转链失败'}`);
+    throw new Error(`折淘客 ${error.code || 'error'} ${cleanField(error.sub_code)}: ${cleanField(error.sub_msg || error.msg || '转链失败', 500)}`);
   }
   if (payload?.status != null && String(payload.status) !== '200') {
-    const message = typeof payload.content === 'string' ? payload.content : payload.msg || payload.message || '转链失败';
-    throw new Error(`折淘客 ${payload.status}: ${message}；请检查 SID 授权、PID 与 RID 是否匹配。`);
+    const message = typeof payload.content === 'string' ? payload.content : payload.content?.msg || payload.content?.message || payload.msg || payload.message || '转链失败';
+    throw new Error(`折淘客 ${payload.status}: ${cleanField(message, 500)}；AppKey 请填淘宝板块密钥；SID 与 PID 须同账号；手淘分享需代理授权、渠道 PID 和已备案 RID。`);
   }
-  const item = Array.isArray(payload?.content) ? payload.content[0] : null;
-  if (String(payload?.status) !== '200' || !item) throw new Error('折淘客未返回商品转链结果');
+  // signurl=5 wraps details in content[], while documented 3/4 responses are flat.
+  const item = String(payload?.status) === '200'
+    ? (Array.isArray(payload.content) ? payload.content[0] : payload.content)
+    : payload?.status == null && ['3', '4'].includes(signurl) ? payload : null;
+  if (!item || typeof item !== 'object') throw new Error('折淘客未返回商品转链结果；请在折淘客接口在线测试中核对同一组参数和结果类型。');
   let resultUrl = httpsUrl(item.shorturl) || httpsUrl(item.coupon_click_url);
   if (!resultUrl) {
     resultUrl = httpsUrl(item.item_url);

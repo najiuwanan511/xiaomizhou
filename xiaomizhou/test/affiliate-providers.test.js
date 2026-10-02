@@ -100,6 +100,38 @@ test('Zhetaoke Taobao rejects incomplete credentials, authorization failures and
   ]) await assert.rejects(convertAffiliate('taobao', 'https://e.tb.cn/h.example', ztkTaobaoConfig, { fetcher: mockResponse(payload) }), pattern);
 });
 
+test('Zhetaoke Taobao parses documented basic and simplified flat responses', async () => {
+  for (const signurl of ['3', '4']) {
+    const result = await convertAffiliate('taobao', 'https://m.tb.cn/h.test', { ...ztkTaobaoConfig, ztkTaobaoSignurl: signurl }, {
+      fetcher: async (_endpoint, options) => {
+        assert.equal(options.body.get('signurl'), signurl);
+        return mockResponse({ item_url: 'https://s.click.taobao.com/t?e=x%2By', ...(signurl === '4' ? { title: '简版商品', tkl: '￥abc123￥', pict_url: 'https://img.alicdn.com/a.jpg' } : {}) })();
+      }
+    });
+    assert.equal(new URL(result.resultUrl).searchParams.get('relationId'), '456');
+    assert.equal(result.estimate, undefined, 'a commission rate must not be reported as a commission amount');
+    assert.equal(result.code, signurl === '4' ? '￥abc123￥' : '');
+  }
+  await assert.rejects(convertAffiliate('taobao', 'https://m.tb.cn/h.test', { ...ztkTaobaoConfig, ztkTaobaoSignurl: '1' }), /结果类型/);
+  await assert.rejects(convertAffiliate('taobao', 'https://m.tb.cn/h.test', { ...ztkTaobaoConfig, ztkTaobaoSignurl: '3' }, {
+    fetcher: mockResponse({ status: 403, msg: '权限不足', item_url: 'https://s.click.taobao.com/t?e=x' })
+  }), /403.*权限不足/);
+});
+
+test('Zhetaoke Taobao errors distinguish network, malformed data and upstream subcodes', async () => {
+  for (const [error, expected] of [
+    [Object.assign(new Error('aborted'), { name: 'TimeoutError' }), /超时.*20 秒/],
+    [new SyntaxError('Unexpected token <'), /不是有效 JSON/],
+    [Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }), /ECONNREFUSED.*10001/]
+  ]) await assert.rejects(convertAffiliate('taobao', 'https://m.tb.cn/h.test', ztkTaobaoConfig, { fetcher: async () => { throw error; } }), expected);
+  await assert.rejects(convertAffiliate('taobao', 'https://m.tb.cn/h.test', ztkTaobaoConfig, {
+    fetcher: mockResponse({ error_response: { code: 15, sub_code: 'isv.item-not-exist', sub_msg: '商品不可推广' } })
+  }), /isv.item-not-exist.*商品不可推广/);
+  await assert.rejects(convertAffiliate('taobao', 'https://m.tb.cn/h.test', ztkTaobaoConfig, {
+    fetcher: mockResponse({ status: 403, content: { message: 'SID授权失效' } })
+  }), /403.*SID授权失效/);
+});
+
 test('JD accepts getResult envelopes and short-only links without accepting failed wrappers', async () => {
   const payload = { jd_union_open_promotion_bysubunionid_get_responce: { code: '0', getResult: JSON.stringify({ code: 200, data: { shortURL: 'https://u.jd.com/short' } }) } };
   assert.deepEqual(await convertAffiliate('jd', 'https://item.jd.com/1.html', { provider: 'official', appKey: 'key', appSecret: 'secret' }, { fetcher: mockResponse(payload) }), { resultUrl: 'https://u.jd.com/short' });

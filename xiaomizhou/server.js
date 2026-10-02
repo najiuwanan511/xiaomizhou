@@ -297,7 +297,7 @@ async function convert(input) {
     for (const secret of [config.appSecret, config.clientSecret, config.appKey, config.clientId, config.ztkAppKey]) {
       if (secret) message = message.replaceAll(secret, '[redacted]');
     }
-    throw Object.assign(new Error(message.slice(0, 250)), { status: error.status || 502 });
+    throw Object.assign(new Error(message.slice(0, 800)), { status: error.status || 502 });
   }
 }
 const qqBotBridge = createQqBotBridge({
@@ -569,7 +569,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && pathname === '/api/rebates') return json(res, 200, { providers: Object.fromEntries(Object.keys(platforms).map(p => {
       const config = rebateConfig(p);
-      return [p, { provider: config.provider || 'official', ztkSid: config.ztkSid || '', ztkPid: config.ztkPid || '', ztkRelationId: config.ztkRelationId || '', ztkAppKey: config.ztkAppKey || '', unionId: config.unionId || '', ztkPositionId: config.ztkPositionId || '', ztkDetails: config.ztkDetails === true, appKey: config.appKey || '', appSecret: config.appSecret || '', jdMethod: config.jdMethod || 'social', siteId: config.siteId || '', positionId: config.positionId || '', adzoneId: config.adzoneId || '', clientId: config.clientId || '', clientSecret: config.clientSecret || '', pid: config.pid || '', configured: rebateConfigured(p, config) }];
+      return [p, { provider: config.provider || 'official', ztkTaobaoSignurl: config.ztkTaobaoSignurl || '5', ztkSid: config.ztkSid || '', ztkPid: config.ztkPid || '', ztkRelationId: config.ztkRelationId || '', ztkAppKey: config.ztkAppKey || '', unionId: config.unionId || '', ztkPositionId: config.ztkPositionId || '', ztkDetails: config.ztkDetails === true, appKey: config.appKey || '', appSecret: config.appSecret || '', jdMethod: config.jdMethod || 'social', siteId: config.siteId || '', positionId: config.positionId || '', adzoneId: config.adzoneId || '', clientId: config.clientId || '', clientSecret: config.clientSecret || '', pid: config.pid || '', configured: rebateConfigured(p, config) }];
     })) });
     if (req.method === 'GET' && pathname === '/api/rebates/automation') return json(res, 200, rebateAutomation());
     if (req.method === 'PUT' && pathname === '/api/rebates/automation') {
@@ -587,6 +587,7 @@ const server = http.createServer(async (req, res) => {
         mode: 'live', provider: input.provider || 'official',
         ztkAppKey: String(input.ztkAppKey ?? old.ztkAppKey ?? '').trim(), unionId: String(input.unionId ?? old.unionId ?? '').trim(),
         ztkPositionId: String(input.ztkPositionId ?? old.ztkPositionId ?? '').trim(), ztkDetails: (input.ztkDetails ?? old.ztkDetails) === true,
+        ztkTaobaoSignurl: String(input.ztkTaobaoSignurl ?? old.ztkTaobaoSignurl ?? '5'),
         ztkSid: String(input.ztkSid ?? old.ztkSid ?? '').trim(), ztkPid: String(input.ztkPid ?? old.ztkPid ?? '').trim(), ztkRelationId: String(input.ztkRelationId ?? old.ztkRelationId ?? '').trim(),
         appKey: String(input.appKey ?? old.appKey ?? '').trim(), appSecret: input.appSecret === '********' ? old.appSecret || '' : String(input.appSecret ?? old.appSecret ?? ''),
         jdMethod: (input.jdMethod ?? old.jdMethod) === 'site' ? 'site' : 'social', siteId: String(input.siteId ?? old.siteId ?? '').trim(),
@@ -594,6 +595,7 @@ const server = http.createServer(async (req, res) => {
         clientId: String(input.clientId || '').trim(), clientSecret: input.clientSecret === '********' ? old.clientSecret || '' : String(input.clientSecret || ''), pid: String(input.pid || '').trim()
       };
       if (config.provider === 'zhetaoke' && input.platform === 'taobao') {
+        if (!['3', '4', '5'].includes(config.ztkTaobaoSignurl)) return fail(res, 400, '折淘客转链结果类型须为 3、4 或 5');
         if (!config.ztkAppKey || !config.ztkSid) return fail(res, 400, '请填写折淘客 AppKey 和淘宝授权 SID');
         if (!/^mm_\d+_\d+_\d+$/.test(config.ztkPid)) return fail(res, 400, '淘宝 PID 须为完整的 mm_数字_数字_数字 格式');
         if (config.ztkRelationId && !/^\d+$/.test(config.ztkRelationId)) return fail(res, 400, '渠道关系 ID（RID）须为数字');

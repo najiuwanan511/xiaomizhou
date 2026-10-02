@@ -189,6 +189,20 @@ test('setup, plugin lifecycle, webhook, and official rebate configuration', asyn
     assert.equal(savedTb.ztkRelationId, '456');
     assert.equal(savedTb.configured, true);
     assert.equal(savedTb.appSecret, 'tb-official-secret');
+    assert.equal(savedTb.ztkTaobaoSignurl, '5');
+    assert.equal((await request('/api/rebates', 'PUT', { ...tbConfig, ztkTaobaoSignurl: 'bad' })).status, 400);
+    assert.equal((await request('/api/rebates', 'PUT', { ...tbConfig, ztkTaobaoSignurl: '3' })).status, 200);
+    assert.equal((await request('/api/rebates')).result.providers.taobao.ztkTaobaoSignurl, '3');
+    const basicTb = await request('/api/rebates/convert', 'POST', { url: '【淘宝】https://m.tb.cn/h.test「测试商品」' });
+    assert.equal(basicTb.status, 200);
+    assert.equal(new URL(basicTb.result.resultUrl).searchParams.get('relationId'), '456');
+    assert.ok(!basicTb.result.formattedText.includes('预计返利'));
+    await request('/api/rebates', 'PUT', { ...tbConfig, ztkSid: 'expired-test-sid' });
+    const failedTb = await request('/api/rebates/convert', 'POST', { url: 'https://m.tb.cn/h.test' });
+    assert.equal(failedTb.status, 502);
+    assert.match(failedTb.result.error, /invalid-sessionkey.*SID授权失效/);
+    assert.ok(!failedTb.result.error.includes(tbConfig.ztkAppKey));
+    assert.equal((await request('/api/rebates', 'PUT', { ...tbConfig, ztkTaobaoSignurl: '5' })).status, 200);
     assert.equal((await request('/api/overview')).result.providers.taobao, 'live');
     const tbUrls = ['https://e.tb.cn/h.test?tk=abc%2Bdef&x=1', 'https://m.tb.cn/h.test', 'https://detail.tmall.com/item.htm?id=123'];
     for (const url of tbUrls) {
