@@ -18,7 +18,7 @@ async function freePort() {
   return port;
 }
 
-test('setup, plugin lifecycle, webhook, and rebate test mode', async () => {
+test('setup, plugin lifecycle, webhook, and official rebate configuration', async () => {
   const dataDir = mkdtempSync(path.join(tmpdir(), 'ownman-test-'));
   const port = await freePort();
   const process = spawn(globalThis.process.execPath, ['server.js'], {
@@ -46,6 +46,8 @@ test('setup, plugin lifecycle, webhook, and rebate test mode', async () => {
     assert.ok(ready, 'server did not start');
     assert.equal((await request('/api/bootstrap')).result.setup, true);
     assert.equal((await request('/api/plugins')).status, 401);
+    assert.equal((await request('/api/rebates')).status, 401);
+    assert.equal((await request('/api/qqbot')).status, 401);
     assert.equal((await request('/api/updates')).status, 401);
     assert.equal((await fetch(base + '/api/backup')).status, 401);
     assert.equal((await request('/api/setup', 'POST', { username: 'admin', password: 'a-long-test-password' })).status, 200);
@@ -100,7 +102,7 @@ test('setup, plugin lifecycle, webhook, and rebate test mode', async () => {
     assert.equal((await request('/api/ai')).result.enabled, false);
     assert.equal((await request('/api/qqbot', 'PUT', { enabled: true, appId: 'bad', appSecret: 'secret' })).status, 400);
     assert.equal((await request('/api/qqbot', 'PUT', { enabled: false, appId: '123', appSecret: 'secret' })).status, 200);
-    assert.equal((await request('/api/qqbot')).result.appSecret, '********');
+    assert.equal((await request('/api/qqbot')).result.appSecret, 'secret');
     assert.equal((await request('/api/wecom', 'PUT', { enabled: true, corpId: 'bad', agentId: '1' })).status, 400);
     const wecomConfig = { enabled: false, corpId: 'wwtestcorp', agentId: '100001', secret: 'app-secret', token: 'callback-token', encodingAesKey: 'A'.repeat(43) };
     assert.equal((await request('/api/wecom', 'PUT', wecomConfig)).status, 200);
@@ -117,24 +119,29 @@ test('setup, plugin lifecycle, webhook, and rebate test mode', async () => {
     assert.equal((await request('/api/events', 'POST', { channel: 'qq', chatId: '123', text: 'https://item.jd.com/1.html' }, { 'X-Webhook-Token': token })).result.actions.length, 0);
     assert.equal((await request(`/api/forwards/${rule.result.id}`, 'DELETE')).status, 200);
     const rebate = await request('/api/rebates/convert', 'POST', { url: 'https://item.jd.com/123.html' });
-    assert.equal(rebate.result.mode, 'test');
-    assert.equal(rebate.result.resultUrl, null);
-    assert.equal((await request('/api/rebates', 'PUT', { platform: 'jd', mode: 'live', provider: 'official', appKey: 'app-key', appSecret: 'secret', siteId: '1234' })).status, 200);
+    assert.equal(rebate.status, 400);
+    assert.match(rebate.result.error, /official affiliate connector/);
+    assert.equal((await request('/api/rebates', 'PUT', { platform: 'jd', mode: 'test', appKey: 'app-key', appSecret: 'secret' })).status, 400);
+    assert.equal((await request('/api/rebates', 'PUT', { platform: 'jd', provider: 'custom', endpoint: 'https://example.com' })).status, 400);
+    assert.equal((await request('/api/rebates', 'PUT', { platform: 'jd', appKey: 'app-key', appSecret: 'secret', siteId: '1234' })).status, 200);
     const savedJd = (await request('/api/rebates')).result.providers.jd;
-    assert.equal(savedJd.appSecret, '********');
+    assert.equal(savedJd.appSecret, 'secret');
     assert.equal(savedJd.appKey, 'app-key');
-    assert.equal((await request('/api/rebates', 'PUT', { platform: 'jd', mode: 'live', provider: 'official', appKey: 'app-key', appSecret: '********', siteId: '1234' })).status, 200);
-    assert.equal((await request('/api/rebates', 'PUT', { platform: 'taobao', mode: 'live', provider: 'official', appKey: 'app-key', appSecret: 'secret', adzoneId: 'bad' })).status, 400);
-    assert.equal((await request('/api/rebates', 'PUT', { platform: 'pdd', mode: 'live', provider: 'official', appKey: 'app-key', appSecret: 'secret' })).status, 400);
-    assert.equal((await request('/api/rebates', 'PUT', { platform: 'jd', mode: 'test', provider: 'official', appKey: 'app-key', appSecret: '********', siteId: '1234' })).status, 200);
+    assert.equal(savedJd.configured, true);
+    assert.equal((await request('/api/rebates', 'PUT', { platform: 'jd', appKey: 'app-key', appSecret: '********', siteId: '1234' })).status, 200);
+    assert.equal((await request('/api/rebates')).result.providers.jd.appSecret, 'secret');
+    assert.equal((await request('/api/rebates', 'PUT', { platform: 'taobao', appKey: 'app-key', appSecret: 'secret', adzoneId: 'bad' })).status, 400);
+    assert.equal((await request('/api/rebates', 'PUT', { platform: 'pdd', clientId: 'client-id', clientSecret: 'client-secret' })).status, 400);
+    assert.equal((await request('/api/rebates', 'PUT', { platform: 'pdd', clientId: 'client-id', clientSecret: 'client-secret', pid: '123_456' })).status, 200);
+    assert.equal((await request('/api/rebates')).result.providers.pdd.clientSecret, 'client-secret');
     assert.equal((await request('/api/rebates/automation', 'PUT', { enabled: true, reply: true })).result.enabled, true);
     assert.equal((await request('/api/rebates/automation', 'PUT', { enabled: true, reply: true, template: '商品：{{name}}' })).status, 400);
     assert.equal((await request('/api/rebates/automation', 'PUT', { enabled: true, reply: true, template: '{{url}} {{unknown}}' })).status, 400);
     assert.equal((await request('/api/rebates/automation', 'PUT', { enabled: true, reply: true, template: '链接：{{url}}' })).result.template, '链接：{{url}}');
     assert.equal((await request('/api/rebates/automation', 'PUT', { enabled: true, reply: true, image: true })).result.image, true);
     assert.equal((await request('/api/rebates/automation')).result.image, true);
+    assert.equal((await request('/api/rebates/automation', 'PUT', { enabled: false, reply: true })).result.enabled, false);
     const automatic = await request('/api/events', 'POST', { channel: 'qq', chatId: '123', text: '看看 https://item.jd.com/123.html。' }, { 'X-Webhook-Token': token });
-    assert.equal(automatic.result.conversions[0].mode, 'test');
     assert.equal(automatic.result.actions.length, 0);
     assert.equal((await request('/api/rebates/convert', 'POST', { url: 'https://example.com' })).status, 400);
     assert.equal((await request(`/api/plugins/${id}`, 'DELETE')).status, 200);

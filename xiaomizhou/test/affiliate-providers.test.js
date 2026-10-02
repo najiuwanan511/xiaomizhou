@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import test from 'node:test';
-import { convertOfficial, signJd, signTaobao } from '../rebate-automation.js';
+import { convertOfficial, signJd, signPdd, signTaobao } from '../rebate-automation.js';
 
 const date = new Date('2026-09-30T12:34:56Z');
 
@@ -52,11 +52,34 @@ test('official Taobao connector signs the request and prefers the coupon link', 
   assert.equal(signTaobao({ b: '2', a: '1' }, 's'), crypto.createHmac('md5', 's').update('a1b2').digest('hex').toUpperCase());
 });
 
+test('official Pinduoduo connector signs the source URL and parses the promotion link', async () => {
+  const source = 'https://mobile.yangkeduo.com/goods.html?goods_id=123';
+  const result = await convertOfficial('pdd', source, { clientId: 'client-id', clientSecret: 'secret', pid: '123_456' }, {
+    date,
+    fetcher: async (endpoint, options) => {
+      assert.equal(endpoint, 'https://gw-api.pinduoduo.com/api/router');
+      const params = Object.fromEntries(options.body);
+      const { sign, ...unsigned } = params;
+      assert.equal(sign, signPdd(unsigned, 'secret'));
+      assert.equal(params.type, 'pdd.ddk.goods.zs.unit.url.gen');
+      assert.equal(params.source_url, source);
+      assert.equal(params.pid, '123_456');
+      assert.equal(params.timestamp, String(Math.floor(date.getTime() / 1000)));
+      return { ok: true, json: async () => ({ goods_zs_unit_generate_response: { mobile_short_url: 'https://p.pinduoduo.com/promo' } }) };
+    }
+  });
+  assert.deepEqual(result, { resultUrl: 'https://p.pinduoduo.com/promo' });
+  assert.equal(signPdd({ b: '2', a: '1' }, 's'), crypto.createHash('md5').update('sa1b2s').digest('hex').toUpperCase());
+});
+
 test('official connector rejects permission errors and non-HTTPS results', async () => {
   await assert.rejects(convertOfficial('taobao', 'https://item.taobao.com/a', { appKey: 'key', appSecret: 'secret', adzoneId: '890' }, {
     fetcher: async () => ({ ok: true, json: async () => ({ tbk_dg_general_link_convert_response: { data: { material_url_list: { material_url_list: [{ code: 1001, msg: '无权限', link_info_dto: { cps_short_url: 'https://s.click.taobao.com/not-valid' } }] } } } }) })
   }), /1001.*无权限/);
   await assert.rejects(convertOfficial('jd', 'https://item.jd.com/1.html', { appKey: 'key', appSecret: 'secret', jdMethod: 'site', siteId: '1234' }, {
     fetcher: async () => ({ ok: true, json: async () => ({ jd_union_open_promotion_common_get_response: { result: JSON.stringify({ code: 200, data: { clickURL: 'http://example.com/insecure' } }) } }) })
+  }), /no HTTPS promotion URL/);
+  await assert.rejects(convertOfficial('pdd', 'https://mobile.yangkeduo.com/goods.html?goods_id=123', { clientId: 'id', clientSecret: 'secret', pid: '1_2' }, {
+    fetcher: async () => ({ ok: true, json: async () => ({ goods_zs_unit_generate_response: { url: 'http://example.com/insecure' } }) })
   }), /no HTTPS promotion URL/);
 });

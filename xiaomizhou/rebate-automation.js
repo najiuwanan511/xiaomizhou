@@ -4,6 +4,7 @@ import net from 'node:net';
 
 const jdEndpoint = 'https://router.jd.com/api';
 const taobaoEndpoint = 'https://eco.taobao.com/router/rest';
+const pddEndpoint = 'https://gw-api.pinduoduo.com/api/router';
 export const defaultRebateTemplate = '商品：{{name}}\n返利链接：{{url}}\n返利口令：{{code}}\n预计返利：{{estimate}}';
 
 export function validateRebateTemplate(value) {
@@ -54,6 +55,10 @@ export function signJd(fields, secret) {
 
 export function signTaobao(fields, secret) {
   return crypto.createHmac('md5', secret).update(sortedFields(fields), 'utf8').digest('hex').toUpperCase();
+}
+
+export function signPdd(fields, secret) {
+  return crypto.createHash('md5').update(`${secret}${sortedFields(fields)}${secret}`, 'utf8').digest('hex').toUpperCase();
 }
 
 function required(config, fields) {
@@ -143,6 +148,21 @@ export async function convertOfficial(platform, url, config, { fetcher = fetch, 
     };
     fields.sign = signTaobao(fields, config.appSecret);
     return taobaoResult(await postForm(taobaoEndpoint, fields, fetcher));
+  }
+  if (platform === 'pdd') {
+    required(config, [['clientId', 'Pinduoduo Client ID'], ['clientSecret', 'Pinduoduo Client Secret'], ['pid', 'Pinduoduo PID']]);
+    const fields = {
+      client_id: config.clientId, type: 'pdd.ddk.goods.zs.unit.url.gen',
+      timestamp: String(Math.floor(date.getTime() / 1000)),
+      source_url: url, pid: config.pid
+    };
+    fields.sign = signPdd(fields, config.clientSecret);
+    const payload = await postForm(pddEndpoint, fields, fetcher);
+    if (payload.error_response) throw new Error(`Pinduoduo API ${payload.error_response.error_code || 'error'}: ${payload.error_response.error_msg || 'request failed'}`);
+    const data = payload.goods_zs_unit_generate_response;
+    const resultUrl = httpsUrl(data?.mobile_short_url) || httpsUrl(data?.mobile_url) || httpsUrl(data?.short_url) || httpsUrl(data?.url);
+    if (!resultUrl) throw new Error('Pinduoduo API returned no HTTPS promotion URL');
+    return { resultUrl };
   }
   throw Object.assign(new Error('Official connector is unavailable for this platform'), { status: 400 });
 }

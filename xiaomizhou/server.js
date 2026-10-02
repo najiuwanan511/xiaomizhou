@@ -155,7 +155,7 @@ function qqBotConfig() {
 }
 function publicQqBotConfig() {
   const config = qqBotConfig();
-  return { enabled: !!config.enabled, appId: config.appId || '', appSecret: config.appSecret ? '********' : '', ...qqBotBridge.status };
+  return { enabled: !!config.enabled, appId: config.appId || '', appSecret: config.appSecret || '', ...qqBotBridge.status };
 }
 const wecomStatus = { lastEventAt: null, lastError: null };
 function wecomConfig() {
@@ -271,38 +271,20 @@ async function convert(input) {
   const platform = platformFor(url);
   if (!platform) throw Object.assign(new Error('Use a JD, Taobao or Pinduoduo product URL'), { status: 400 });
   const config = rebateConfig(platform);
-  if (config.mode !== 'live') {
-    return { platform, mode: 'test', sourceUrl: url, resultUrl: null, message: 'Test only. No affiliate link was generated.' };
+  if (config.mode !== 'live' || config.provider !== 'official') {
+    throw Object.assign(new Error('Configure the official affiliate connector first'), { status: 400 });
   }
-  if (config.provider === 'official') {
-    try {
-      const details = await convertOfficial(platform, url, config);
-      const result = { platform, mode: 'live', provider: 'official', sourceUrl: url, ...details };
-      return { ...result, formattedText: formatRebate(result, rebateAutomation().template) };
-    } catch (error) {
-      const message = String(error.message || 'Official affiliate API failed').replaceAll(config.appSecret || '\u0000', '[redacted]').replaceAll(config.appKey || '\u0000', '[redacted]').slice(0, 250);
-      throw Object.assign(new Error(message), { status: error.status || 502 });
+  try {
+    const details = await convertOfficial(platform, url, config);
+    const result = { platform, mode: 'live', provider: 'official', sourceUrl: url, ...details };
+    return { ...result, formattedText: formatRebate(result, rebateAutomation().template) };
+  } catch (error) {
+    let message = String(error.message || 'Official affiliate API failed');
+    for (const secret of [config.appSecret, config.clientSecret, config.appKey, config.clientId]) {
+      if (secret) message = message.replaceAll(secret, '[redacted]');
     }
+    throw Object.assign(new Error(message.slice(0, 250)), { status: error.status || 502 });
   }
-  const endpoint = new URL(config.endpoint || '');
-  if (endpoint.protocol !== 'https:') throw Object.assign(new Error('Live endpoint must use HTTPS'), { status: 400 });
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}) },
-    body: JSON.stringify({ platform, url, campaignId: config.campaignId || '' }),
-    signal: AbortSignal.timeout(10000),
-    redirect: 'error'
-  });
-  if (!response.ok) throw new Error(`Affiliate API returned HTTP ${response.status}`);
-  const payload = await response.json();
-  const resultUrl = payload.url || payload.resultUrl;
-  let parsedResultUrl;
-  try { parsedResultUrl = new URL(resultUrl); }
-  catch { throw new Error('Affiliate API returned no HTTPS URL'); }
-  if (parsedResultUrl.protocol !== 'https:' || !parsedResultUrl.hostname || parsedResultUrl.username || parsedResultUrl.password) throw new Error('Affiliate API returned no HTTPS URL');
-  const result = { platform, mode: 'live', provider: 'custom', sourceUrl: url, resultUrl: parsedResultUrl.href,
-    name: payload.name, code: payload.code, estimate: payload.estimate, imageUrl: imageUrl(payload.imageUrl || payload.image_url) };
-  return { ...result, formattedText: formatRebate(result, rebateAutomation().template) };
 }
 const qqBotBridge = createQqBotBridge({
   getConfig: qqBotConfig,
@@ -439,7 +421,7 @@ const server = http.createServer(async (req, res) => {
         throw error;
       }
     }
-    if (req.method === 'GET' && pathname === '/api/overview') return json(res, 200, { pluginCount: q.plugins.all().length, enabledCount: q.enabled.all().length, recentLogs: q.logs.all().slice(0, 8), providers: Object.fromEntries(Object.keys(platforms).map(p => [p, rebateConfig(p).mode || 'test'])), qq: publicQqConfig(), qqbot: publicQqBotConfig(), wecom: publicWecomConfig(), ai: { enabled: getAiConfig().enabled, provider: getAiConfig().provider, model: getAiConfig().model } });
+    if (req.method === 'GET' && pathname === '/api/overview') return json(res, 200, { pluginCount: q.plugins.all().length, enabledCount: q.enabled.all().length, recentLogs: q.logs.all().slice(0, 8), providers: Object.fromEntries(Object.keys(platforms).map(p => { const config = rebateConfig(p); return [p, config.mode === 'live' && config.provider === 'official' ? 'live' : 'unconfigured']; })), qq: publicQqConfig(), qqbot: publicQqBotConfig(), wecom: publicWecomConfig(), ai: { enabled: getAiConfig().enabled, provider: getAiConfig().provider, model: getAiConfig().model } });
     if (req.method === 'GET' && pathname === '/api/settings') return json(res, 200, { name: getSetting('name', 'xiaomizhou'), webhookToken: getSetting('webhookToken') });
     if (req.method === 'PUT' && pathname === '/api/settings') { const input = await body(req); putSetting.run('name', String(input.name || 'xiaomizhou').slice(0, 60)); return json(res, 200, { ok: true }); }
     if (req.method === 'GET' && pathname === '/api/ai') return json(res, 200, publicAiConfig());
@@ -570,7 +552,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && pathname === '/api/rebates') return json(res, 200, { providers: Object.fromEntries(Object.keys(platforms).map(p => {
       const config = rebateConfig(p);
-      return [p, { ...config, apiKey: config.apiKey ? '********' : '', appSecret: config.appSecret ? '********' : '' }];
+      return [p, { appKey: config.appKey || '', appSecret: config.appSecret || '', jdMethod: config.jdMethod || 'social', siteId: config.siteId || '', positionId: config.positionId || '', adzoneId: config.adzoneId || '', clientId: config.clientId || '', clientSecret: config.clientSecret || '', pid: config.pid || '', configured: config.mode === 'live' && config.provider === 'official' }];
     })) });
     if (req.method === 'GET' && pathname === '/api/rebates/automation') return json(res, 200, rebateAutomation());
     if (req.method === 'PUT' && pathname === '/api/rebates/automation') {
@@ -582,18 +564,18 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'PUT' && pathname === '/api/rebates') {
       const input = await body(req); if (!platforms[input.platform]) return fail(res, 400, 'Unknown platform');
+      if ((input.mode && input.mode !== 'live') || (input.provider && input.provider !== 'official')) return fail(res, 400, 'Only official affiliate connectors are supported');
       const old = rebateConfig(input.platform);
       const config = {
-        mode: input.mode === 'live' ? 'live' : 'test', provider: input.provider === 'official' ? 'official' : 'custom',
-        endpoint: String(input.endpoint || '').trim(), campaignId: String(input.campaignId || '').trim(),
-        apiKey: input.apiKey === '********' ? old.apiKey || '' : String(input.apiKey || ''),
+        mode: 'live', provider: 'official',
         appKey: String(input.appKey || '').trim(), appSecret: input.appSecret === '********' ? old.appSecret || '' : String(input.appSecret || ''),
         jdMethod: input.jdMethod === 'site' ? 'site' : 'social', siteId: String(input.siteId || '').trim(),
-        positionId: String(input.positionId || '').trim(), adzoneId: String(input.adzoneId || '').trim()
+        positionId: String(input.positionId || '').trim(), adzoneId: String(input.adzoneId || '').trim(),
+        clientId: String(input.clientId || '').trim(), clientSecret: input.clientSecret === '********' ? old.clientSecret || '' : String(input.clientSecret || ''), pid: String(input.pid || '').trim()
       };
-      if (config.provider === 'official' && input.platform === 'pdd') return fail(res, 400, 'Official Pinduoduo connector is not available');
-      if (config.mode === 'live' && config.provider === 'custom' && !config.endpoint.startsWith('https://')) return fail(res, 400, 'HTTPS endpoint required for live mode');
-      if (config.mode === 'live' && config.provider === 'official') {
+      if (input.platform === 'pdd') {
+        if (!config.clientId || !config.clientSecret || !config.pid) return fail(res, 400, 'Client ID, Client Secret and PID are required');
+      } else {
         if (!config.appKey || !config.appSecret) return fail(res, 400, 'AppKey and AppSecret are required');
         const id = input.platform === 'jd' ? config.siteId : config.adzoneId;
         if ((input.platform !== 'jd' || config.jdMethod === 'site') && !/^\d+$/.test(id)) return fail(res, 400, input.platform === 'jd' ? 'Numeric JD site ID required' : 'Numeric Taobao adzone ID required');
