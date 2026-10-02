@@ -19,7 +19,7 @@ test('official JD connector signs the request and parses the promotion link', as
       return { ok: true, json: async () => ({ jd_union_open_promotion_common_get_response: { code: '0', result: JSON.stringify({ code: 200, data: { clickURL: 'https://u.jd.com/promo' } }) } }) };
     }
   });
-  assert.equal(url, 'https://u.jd.com/promo');
+  assert.deepEqual(url, { resultUrl: 'https://u.jd.com/promo' });
   assert.equal(signJd({ b: '2', a: '1' }, 's'), crypto.createHash('md5').update('sa1b2s').digest('hex').toUpperCase());
 });
 
@@ -32,7 +32,7 @@ test('official JD social connector uses the social API without a site ID', async
       return { ok: true, json: async () => ({ jd_union_open_promotion_bysubunionid_get_response: { code: '0', result: JSON.stringify({ code: 200, data: { clickURL: 'https://u.jd.com/social' } }) } }) };
     }
   });
-  assert.equal(url, 'https://u.jd.com/social');
+  assert.deepEqual(url, { resultUrl: 'https://u.jd.com/social' });
 });
 
 test('official Taobao connector signs the request and prefers the coupon link', async () => {
@@ -44,10 +44,11 @@ test('official Taobao connector signs the request and prefers the coupon link', 
       const { sign, ...unsigned } = params;
       assert.equal(sign, signTaobao(unsigned, 'secret'));
       assert.equal(params.adzone_id, '890');
-      return { ok: true, json: async () => ({ tbk_dg_general_link_convert_response: { data: { material_url_list: { material_url_list: [{ code: 0, link_info_dto: { coupon_short_url: 'https://s.click.taobao.com/coupon', cps_short_url: 'https://s.click.taobao.com/item' } }] } } } }) };
+      assert.match(params.required_link_type, /coupon_short_tpwd/);
+      return { ok: true, json: async () => ({ tbk_dg_general_link_convert_response: { data: { material_url_list: { material_url_list: [{ code: 0, link_info_dto: { coupon_short_url: 'https://s.click.taobao.com/coupon', cps_short_url: 'https://s.click.taobao.com/item', coupon_short_tpwd: '￥coupon￥' } }] } } } }) };
     }
   });
-  assert.equal(url, 'https://s.click.taobao.com/coupon');
+  assert.deepEqual(url, { resultUrl: 'https://s.click.taobao.com/coupon', code: '￥coupon￥' });
   assert.equal(signTaobao({ b: '2', a: '1' }, 's'), crypto.createHmac('md5', 's').update('a1b2').digest('hex').toUpperCase());
 });
 

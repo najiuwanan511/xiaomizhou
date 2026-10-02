@@ -3,6 +3,37 @@ import crypto from 'node:crypto';
 
 const jdEndpoint = 'https://router.jd.com/api';
 const taobaoEndpoint = 'https://eco.taobao.com/router/rest';
+export const defaultRebateTemplate = '商品：{{name}}\n返利链接：{{url}}\n返利口令：{{code}}\n预计返利：{{estimate}}';
+
+export function validateRebateTemplate(value) {
+  if (typeof value !== 'string' || !value.trim() || value.length > 1000 || value.split('\n').length > 20) {
+    throw Object.assign(new Error('Template must be 1-1000 characters and at most 20 lines'), { status: 400 });
+  }
+  const fields = [...value.matchAll(/{{\s*([^{}]+?)\s*}}/g)].map(match => match[1]);
+  if (fields.some(field => !['name', 'url', 'code', 'estimate'].includes(field)) || !fields.includes('url') || /{{|}}/.test(value.replace(/{{\s*(?:name|url|code|estimate)\s*}}/g, ''))) {
+    throw Object.assign(new Error('Template needs {{url}} and only supports {{name}}, {{url}}, {{code}}, {{estimate}}'), { status: 400 });
+  }
+  return value;
+}
+
+function cleanField(value, maxLength = 200) {
+  if (typeof value !== 'string' && typeof value !== 'number') return '';
+  return String(value).replace(/[\r\n\u0000-\u001f\u007f]/g, ' ').trim().slice(0, maxLength);
+}
+
+export function formatRebate(conversion, template = defaultRebateTemplate) {
+  if (conversion.mode !== 'live') return '';
+  const fields = {
+    name: cleanField(conversion.name),
+    url: conversion.resultUrl,
+    code: cleanField(conversion.code),
+    estimate: typeof conversion.estimate === 'number' && Number.isFinite(conversion.estimate) && conversion.estimate >= 0
+      ? `${conversion.estimate.toFixed(2)} 元` : cleanField(conversion.estimate, 80)
+  };
+  return template.split(/\r?\n/).filter(line =>
+    ![...line.matchAll(/{{\s*(name|code|estimate)\s*}}/g)].some(match => !fields[match[1]])
+  ).map(line => line.replace(/{{\s*(name|url|code|estimate)\s*}}/g, (_match, field) => fields[field])).join('\n').trim();
+}
 
 function timestamp(date) {
   return new Intl.DateTimeFormat('sv-SE', {
@@ -53,7 +84,7 @@ function jdResult(payload, method) {
   if ((wrapper.code != null && String(wrapper.code) !== '0') || String(result?.code) !== '200') throw new Error(`JD API ${result?.code || wrapper.code || 'error'}: ${result?.message || wrapper.message || 'conversion failed'}`);
   const url = httpsUrl(result?.data?.clickURL);
   if (!url) throw new Error('JD API returned no HTTPS promotion URL');
-  return url;
+  return { resultUrl: url };
 }
 
 function taobaoResult(payload) {
@@ -64,9 +95,12 @@ function taobaoResult(payload) {
   if (!item) throw new Error('Taobao API returned no converted material');
   if (item.code != null && String(item.code) !== '0') throw new Error(`Taobao API ${item.code}: ${item.msg || 'conversion failed'}`);
   const links = item.link_info_dto;
-  const url = httpsUrl(links?.coupon_short_url) || httpsUrl(links?.coupon_long_url) || httpsUrl(links?.cps_short_url) || httpsUrl(links?.cps_long_url);
-  if (!url) throw new Error('Taobao API returned no HTTPS promotion URL');
-  return url;
+  const couponUrl = httpsUrl(links?.coupon_short_url) || httpsUrl(links?.coupon_long_url);
+  const cpsUrl = httpsUrl(links?.cps_short_url) || httpsUrl(links?.cps_long_url);
+  if (!couponUrl && !cpsUrl) throw new Error('Taobao API returned no HTTPS promotion URL');
+  return couponUrl
+    ? { resultUrl: couponUrl, code: links?.coupon_short_tpwd || '' }
+    : { resultUrl: cpsUrl, code: links?.cps_short_tpwd || '' };
 }
 
 export async function convertOfficial(platform, url, config, { fetcher = fetch, date = new Date() } = {}) {
@@ -91,7 +125,7 @@ export async function convertOfficial(platform, url, config, { fetcher = fetch, 
     const fields = {
       app_key: config.appKey, method: 'taobao.tbk.dg.general.link.convert', format: 'json',
       sign_method: 'hmac', timestamp: timestamp(date), v: '2.0', adzone_id: config.adzoneId,
-      material_list: url, required_link_type: 'coupon_short_url,coupon_long_url,cps_short_url,cps_long_url'
+      material_list: url, required_link_type: 'coupon_short_url,coupon_long_url,cps_short_url,cps_long_url,coupon_short_tpwd,cps_short_tpwd'
     };
     fields.sign = signTaobao(fields, config.appSecret);
     return taobaoResult(await postForm(taobaoEndpoint, fields, fetcher));
@@ -112,10 +146,11 @@ export async function applyRebates(event, result, config, convert, platformFor, 
       const conversion = await convert({ url });
       conversions.push(conversion);
       if (conversion.mode !== 'live') continue;
+      const message = formatRebate(conversion, config.template);
       for (const action of result.actions) {
-        if (action.type === 'forward' && action.text.includes(url)) action.text = action.text.replaceAll(url, conversion.resultUrl);
+        if (action.type === 'forward' && action.text.includes(url)) action.text = action.text.replaceAll(url, message);
       }
-      if (config.reply) result.actions.push({ type: 'reply', text: conversion.resultUrl, plugin: 'Affiliate conversion' });
+      if (config.reply) result.actions.push({ type: 'reply', text: message, plugin: 'Affiliate conversion' });
       log('info', 'rebate', `${conversion.platform} automatic conversion`);
     } catch (error) {
       for (const action of result.actions) {

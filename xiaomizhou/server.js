@@ -9,7 +9,7 @@ import { runPlugin } from './plugin-runner.js';
 import { oneBotEvent, qqDestination, oneBotCall, sendQq } from './qq-bridge.js';
 import { createQqBotBridge, qqBotDestination } from './qqbot-bridge.js';
 import { createWecomBridge, wecomCallback, wecomDestination, wecomEvent } from './wecom-bridge.js';
-import { applyRebates, convertOfficial } from './rebate-automation.js';
+import { applyRebates, convertOfficial, defaultRebateTemplate, formatRebate, validateRebateTemplate } from './rebate-automation.js';
 import { aiConfig, conversationKey, generateAiReply, normalizeAiConfig, shouldAnswer } from './ai-brain.js';
 import { checkUpdate, installUpdate } from './update-manager.js';
 
@@ -237,8 +237,8 @@ function rebateConfig(platform) {
 function rebateAutomation() {
   try {
     const value = JSON.parse(getSetting('rebate.automation', '{}'));
-    return { enabled: !!value.enabled, reply: value.reply !== false };
-  } catch { return { enabled: false, reply: true }; }
+    return { enabled: !!value.enabled, reply: value.reply !== false, template: value.template || defaultRebateTemplate };
+  } catch { return { enabled: false, reply: true, template: defaultRebateTemplate }; }
 }
 async function convert(input) {
   const url = String(input.url || '').trim();
@@ -250,8 +250,9 @@ async function convert(input) {
   }
   if (config.provider === 'official') {
     try {
-      const resultUrl = await convertOfficial(platform, url, config);
-      return { platform, mode: 'live', provider: 'official', sourceUrl: url, resultUrl };
+      const details = await convertOfficial(platform, url, config);
+      const result = { platform, mode: 'live', provider: 'official', sourceUrl: url, ...details };
+      return { ...result, formattedText: formatRebate(result, rebateAutomation().template) };
     } catch (error) {
       const message = String(error.message || 'Official affiliate API failed').replaceAll(config.appSecret || '\u0000', '[redacted]').replaceAll(config.appKey || '\u0000', '[redacted]').slice(0, 250);
       throw Object.assign(new Error(message), { status: error.status || 502 });
@@ -269,8 +270,13 @@ async function convert(input) {
   if (!response.ok) throw new Error(`Affiliate API returned HTTP ${response.status}`);
   const payload = await response.json();
   const resultUrl = payload.url || payload.resultUrl;
-  if (typeof resultUrl !== 'string' || !resultUrl.startsWith('https://')) throw new Error('Affiliate API returned no HTTPS URL');
-  return { platform, mode: 'live', sourceUrl: url, resultUrl };
+  let parsedResultUrl;
+  try { parsedResultUrl = new URL(resultUrl); }
+  catch { throw new Error('Affiliate API returned no HTTPS URL'); }
+  if (parsedResultUrl.protocol !== 'https:' || !parsedResultUrl.hostname || parsedResultUrl.username || parsedResultUrl.password) throw new Error('Affiliate API returned no HTTPS URL');
+  const result = { platform, mode: 'live', provider: 'custom', sourceUrl: url, resultUrl: parsedResultUrl.href,
+    name: payload.name, code: payload.code, estimate: payload.estimate };
+  return { ...result, formattedText: formatRebate(result, rebateAutomation().template) };
 }
 const qqBotBridge = createQqBotBridge({
   getConfig: qqBotConfig,
@@ -526,7 +532,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/api/rebates/automation') return json(res, 200, rebateAutomation());
     if (req.method === 'PUT' && pathname === '/api/rebates/automation') {
       const input = await body(req);
-      putSetting.run('rebate.automation', JSON.stringify({ enabled: input.enabled === true, reply: input.reply !== false }));
+      const template = validateRebateTemplate(input.template ?? rebateAutomation().template);
+      putSetting.run('rebate.automation', JSON.stringify({ enabled: input.enabled === true, reply: input.reply !== false, template }));
       log('info', 'rebate', `Automatic conversion ${input.enabled === true ? 'enabled' : 'disabled'}`);
       return json(res, 200, rebateAutomation());
     }

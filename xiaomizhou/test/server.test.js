@@ -7,7 +7,7 @@ import net from 'node:net';
 import http from 'node:http';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { applyRebates, productUrls } from '../rebate-automation.js';
+import { applyRebates, formatRebate, productUrls, validateRebateTemplate } from '../rebate-automation.js';
 
 async function freePort() {
   const socket = net.createServer();
@@ -108,6 +108,9 @@ test('setup, plugin lifecycle, webhook, and rebate test mode', async () => {
     assert.equal((await request('/api/rebates', 'PUT', { platform: 'pdd', mode: 'live', provider: 'official', appKey: 'app-key', appSecret: 'secret' })).status, 400);
     assert.equal((await request('/api/rebates', 'PUT', { platform: 'jd', mode: 'test', provider: 'official', appKey: 'app-key', appSecret: '********', siteId: '1234' })).status, 200);
     assert.equal((await request('/api/rebates/automation', 'PUT', { enabled: true, reply: true })).result.enabled, true);
+    assert.equal((await request('/api/rebates/automation', 'PUT', { enabled: true, reply: true, template: '商品：{{name}}' })).status, 400);
+    assert.equal((await request('/api/rebates/automation', 'PUT', { enabled: true, reply: true, template: '{{url}} {{unknown}}' })).status, 400);
+    assert.equal((await request('/api/rebates/automation', 'PUT', { enabled: true, reply: true, template: '链接：{{url}}' })).result.template, '链接：{{url}}');
     const automatic = await request('/api/events', 'POST', { channel: 'qq', chatId: '123', text: '看看 https://item.jd.com/123.html。' }, { 'X-Webhook-Token': token });
     assert.equal(automatic.result.conversions[0].mode, 'test');
     assert.equal(automatic.result.actions.length, 0);
@@ -130,13 +133,22 @@ test('affiliate automation replaces forward links and blocks forwarding on failu
   const actions = () => [{ type: 'forward', channel: 'qq', target: 'group:123', text: event.text }];
   const logs = [];
   const success = await applyRebates(event, { actions: actions(), errors: [] }, { enabled: true, reply: true }, async () => ({ platform: 'jd', mode: 'live', resultUrl: 'https://promo.example/abc' }), platformFor, (...args) => logs.push(args));
-  assert.equal(success.actions[0].text, '商品 https://promo.example/abc');
+  assert.equal(success.actions[0].text, '商品 返利链接：https://promo.example/abc');
   assert.equal(success.actions[1].type, 'reply');
-  assert.equal(success.actions[1].text, 'https://promo.example/abc');
+  assert.equal(success.actions[1].text, '返利链接：https://promo.example/abc');
+  const detailed = await applyRebates(event, { actions: actions(), errors: [] }, { enabled: true, reply: true, template: '商品：{{name}}\n链接：{{url}}\n口令：{{code}}\n预计返利：{{estimate}}' }, async () => ({ platform: 'jd', mode: 'live', resultUrl: 'https://promo.example/abc', name: '测试商品', code: '￥abc￥', estimate: '2.30 元' }), platformFor, () => {});
+  assert.equal(detailed.actions[1].text, '商品：测试商品\n链接：https://promo.example/abc\n口令：￥abc￥\n预计返利：2.30 元');
+  assert.equal(detailed.actions[0].text, `商品 ${detailed.actions[1].text}`);
   const failure = await applyRebates(event, { actions: actions(), errors: [] }, { enabled: true, reply: true }, async () => { throw new Error('API unavailable'); }, platformFor, (...args) => logs.push(args));
   assert.equal(failure.actions[0].type, 'blocked');
   assert.match(failure.errors[0].message, /API unavailable/);
   assert.equal(failure.actions.some(action => action.type === 'reply'), false);
+});
+
+test('rebate template omits missing fields and keeps one link per product', () => {
+  const template = validateRebateTemplate('商品：{{name}}\n链接：{{url}}\n口令：{{code}}\n预计返利：{{estimate}}');
+  assert.equal(formatRebate({ mode: 'live', resultUrl: 'https://promo.example/a', name: 'A\nB', estimate: 2.3 }, template), '商品：A B\n链接：https://promo.example/a\n预计返利：2.30 元');
+  assert.equal(formatRebate({ mode: 'test', resultUrl: null }, template), '');
 });
 
 test('QQ OneBot callback replies, forwards, deduplicates and retries failed sends', async () => {
