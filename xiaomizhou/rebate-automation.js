@@ -198,8 +198,11 @@ async function convertZhetaokeTaobao(url, config, { fetcher = fetch } = {}) {
   }
   if (payload?.status != null && String(payload.status) !== '200') {
     const message = taobaoFailureMessage(payload);
+    const channelHint = config.ztkRelationId
+      ? '当前请求包含 RID；若相同分享文案留空 RID 能成功，请检查 RID 与渠道 PID、授权账号的匹配。可手动留空验证普通转链，但不代表渠道用户归因通过。'
+      : '';
     const hint = taobaoParseFailure(payload)
-      ? `${retriedToken ? '已尝试短链自带的淘口令，仍未解析成功。' : ''}请重新复制完整商品分享文案，并在折淘客「接口在线测试」用相同参数对照；若同样失败，请在折淘客检查代理授权和商品支持情况。此错误不能单独证明 RID 填错。`
+      ? `${retriedToken ? '已尝试短链自带的淘口令，仍未解析成功。' : ''}${channelHint}请重新复制完整商品分享文案，并在折淘客「接口在线测试」用相同参数对照；若同样失败，请在折淘客检查授权、渠道匹配和商品支持情况。此错误不能单独证明授权过期或 RID 填错。`
       : '请在折淘客接口调用日志查看原因；授权错误需核对淘宝 AppKey、同账号 SID/PID，以及手淘分享所需的代理授权和 RID。';
     throw new Error(`折淘客 ${payload.status}: ${cleanField(message, 400)}；${hint}`);
   }

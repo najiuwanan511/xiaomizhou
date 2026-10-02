@@ -39,8 +39,8 @@ v0.3.7 起，「链接 / 分享文案测试」可直接粘贴手机 APP 复制�
 
 1. 登录[折淘客](https://www.zhetaoke.com/)，在[授权管理](https://www.zhetaoke.com/user/shouquan.html)授权自己的淘宝联盟账号，取得对应 SID；从[对接密钥](https://www.zhetaoke.com/user/open/open_appkey.aspx)获取折淘客 AppKey。
 2. 在淘宝联盟取得完整 PID，格式为 `mm_数字_数字_数字`，并在[折淘客 PID 管理](https://www.zhetaoke.com/user/extend/extend_mypid.aspx)核对设置。PID 必须属于 SID 授权的同一个淘宝账号；这里填写完整 PID，不是官方直连的第三段推广位 ID。
-3. 根据[折淘客高佣转链接口文档](https://www.zhetaoke.com/user/open/open_gaoyongzhuanlian_tkl.aspx)，处理手机淘宝复制的内容，需要代理类型 SID、渠道 PID 和对应渠道关系 ID（RID）。RID 是用户完成渠道邀请备案后得到的 `relation_id`，不是 PID 第三段、邀请码或自己随便填写的数字；可从渠道信息查询结果读取。仅有 SID、PID 不代表手机 APP 转链权限已满足，具体授权类型以折淘客后台为准。
-4. 小米粥「返利转链 → 淘宝 → 接入方式」选择「折淘客」，填写 AppKey、SID、完整 PID 和所需 RID 并保存。不需要淘宝应用 AppSecret；不会复用京东联盟 ID 作为淘宝授权。
+3. 根据[折淘客高佣转链接口文档](https://www.zhetaoke.com/user/open/open_gaoyongzhuanlian_tkl.aspx)，文档强调手机分享的代理授权和渠道参数要求，参数表同时将 RID 标为仅用于渠道推广的可选项。实际排查已观察到同组授权及 PID 在 RID 留空时能成功转链、填入某个 RID 时失败，因此不要把 RID 当作所有转链的必填项。普通转链可先留空验证；渠道场景需要匹配的渠道 PID 和 RID，并按实际接口要求配置授权类型。RID 是用户完成渠道邀请备案后得到的 `relation_id`，不是 PID 第三段、邀请码或自己随便填写的数字；可从渠道信息查询结果读取。仅有 SID、PID 不代表手机 APP 转链权限已满足，具体授权类型以折淘客后台为准。
+4. 小米粥「返利转链 → 淘宝 → 接入方式」选择「折淘客」，填写 AppKey、SID、完整 PID 并保存；RID 为可选项，普通转链可先留空。需要渠道归因时才填写匹配的 RID。不需要淘宝应用 AppSecret；不会复用京东联盟 ID 作为淘宝授权。
 5. 粘贴淘宝 APP 分享的整段文案，或淘宝／天猫商品链接、`e.tb.cn`／`m.tb.cn` 短链，执行测试。折淘客接入会保留单商品的完整分享文案和口令；多商品群消息则逐个提交链接，避免口令串用。没有 URL 的纯淘口令暂不支持。先核对推广链接和订单归因，再开启自动回复和群转发。
 
 接口提供的商品名、淘口令、图片和预估佣金用于现有模板；发送图片仍由「附带商品图片」开关控制。缺失字段不补造，预估佣金不等于用户最终到账返利。切换回官方直连会保留折淘客参数；修改配置后需保存才用于实际转链。
@@ -52,16 +52,16 @@ v0.3.7 起，「链接 / 分享文案测试」可直接粘贴手机 APP 复制�
 | 折淘客 AppKey | [淘宝板块对接秘钥](https://www.zhetaoke.com/user/open/open_appkey.aspx) | 登录后复制 AppKey；不填写淘宝应用 AppSecret或折京客密钥 |
 | SID | [授权管理](https://www.zhetaoke.com/user/shouquan.html) | 完成淘宝账号授权，复制对应授权记录的 SID |
 | PID | [淘宝联盟](https://pub.alimama.com/)的推广位管理；[折淘客 PID 管理](https://www.zhetaoke.com/user/extend/extend_mypid.aspx) | 复制完整 `mm_数字_数字_数字`；须属于 SID 对应账号，渠道场景使用渠道专属推广位 |
-| RID | [渠道备案获取教程](https://www.zhetaoke.com/help_detail_3_20.html)、[渠道备案接口说明](https://www.zhetaoke.com/user/open/open_sc_publisher_save.aspx)、[渠道查询 API 文档](https://www.zhetaoke.com/user/open/open_sc_publisher_get.aspx) | 用户通过渠道邀请备案后取得的 `relation_id`；代理授权和手淘分享需要填写 |
+| RID | [渠道备案获取教程](https://www.zhetaoke.com/help_detail_3_20.html)、[渠道备案接口说明](https://www.zhetaoke.com/user/open/open_sc_publisher_save.aspx)、[渠道查询 API 文档](https://www.zhetaoke.com/user/open/open_sc_publisher_get.aspx) | 用户通过渠道邀请备案后取得的 `relation_id`；普通转链可留空；渠道归因场景需匹配授权账号及渠道 PID |
 
 RID 没有所有账号通用的领取链接。请先打开[淘宝联盟后台](https://pub.alimama.com/)，登录自己的账号，在渠道管理中获取自己的邀请备案链接，完成对应用户备案后取得 relation_id。没有渠道管理入口时，先向淘宝联盟确认渠道权限；不要使用教程中的示例邀请码。
 
-这些入口需要自行登录，页面不会自动把小米粥中的密钥带到链接里。RID 教程和查询入口是说明页，不是打开就能产生 RID；须先满足渠道权限并完成用户备案。目前小米粥只有一个固定 RID 配置，所有转链共用它，尚未实现每个 QQ 用户自动备案和订单返利记账。
+这些入口需要自行登录，页面不会自动把小米粥中的密钥带到链接里。RID 教程和查询入口是说明页，不是打开就能产生 RID；须先满足渠道权限并完成用户备案。RID 留空时程序不发送 relation_id；填写时所有转链共用该固定 RID，尚未实现每个 QQ 用户自动备案和订单返利记账。留空成功不代表已经验证渠道用户归因；程序也不会在失败后自动删除已填写的 RID 重试。
 
 排错顺序：
 
 1. 修改参数后点击保存；有未保存更改时测试按钮禁用。已配置只代表保存成功，不代表账号授权已验证。
-2. 选择「基础转链」并保存，粘贴一条当前可推广商品的链接或完整分享文案测试。基础类型对应 `signurl=3`，不保证图片、淘口令或佣金金额；不要把佣金率当成金额。
+2. 首次可先留空 RID 保存并验证普通转链；若只有填入 RID 时失败，检查 RID 所属渠道、渠道专属 PID 和授权账号的匹配，不能仅凭此错误断定授权过期或商品不支持。选择「基础转链」并保存，粘贴一条当前可推广商品的链接或完整分享文案测试。基础类型对应 `signurl=3`，不保证图片、淘口令或佣金金额；不要把佣金率当成金额。
 3. 基础成功后再切换「简版商品详情与淘口令」（4）或「完整商品详情与淘口令」（5）。旧版的完整详情选项保持不变。三种类型都不能绕过账号授权或渠道权限。
 4. 失败时查看结果里的错误码和说明，也可打开[折淘客在线测试](https://www.zhetaoke.com/user/open/test_open_gaoyongzhuanlian_tkl.aspx)，使用同一组参数、同一商品和同一结果类型作比较；在[折淘客调用日志](https://www.zhetaoke.com/user/open/open_log.aspx)核对请求。
 5. 超时说明接口未及时返回，检查飞牛容器是否可访问 `api.zhetaoke.com:10001`。程序使用 HTTPS、POST 表单并编码一次，不自动降级为 HTTP。非 JSON 错误请检查是否被代理或登录页拦截。

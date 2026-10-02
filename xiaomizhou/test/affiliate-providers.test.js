@@ -105,6 +105,7 @@ test('Zhetaoke token fallback is bounded and never retries auth errors or ambigu
       fetcher: async () => { calls++; return mockResponse(payload)(); }
     }), error => {
       if (expectedCalls === 2) assert.match(error.message, /已尝试短链自带的淘口令/);
+      if (payload.content === '商品ID解析错误') assert.match(error.message, /当前请求包含 RID.*留空 RID 能成功.*渠道用户归因/);
       return true;
     });
     assert.equal(calls, expectedCalls, source);
