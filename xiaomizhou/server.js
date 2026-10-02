@@ -9,7 +9,7 @@ import { runPlugin } from './plugin-runner.js';
 import { oneBotEvent, qqDestination, oneBotCall, sendQq } from './qq-bridge.js';
 import { createQqBotBridge, qqBotDestination } from './qqbot-bridge.js';
 import { createWecomBridge, wecomCallback, wecomDestination, wecomEvent } from './wecom-bridge.js';
-import { applyRebates, convertAffiliate, rebateConfigured, defaultRebateTemplate, formatRebate, imageUrl, validateRebateTemplate } from './rebate-automation.js';
+import { applyRebates, convertAffiliate, rebateConfigured, defaultRebateTemplate, formatRebate, imageUrl, normalizeShareText, productUrls, validateRebateTemplate } from './rebate-automation.js';
 import { aiConfig, conversationKey, generateAiReply, normalizeAiConfig, parseAiConfigRequest, shouldAnswer } from './ai-brain.js';
 import { checkUpdate, installUpdate } from './update-manager.js';
 
@@ -120,7 +120,7 @@ function processEvent(event, onlyId = null) {
   if (!onlyId) {
     for (const rule of q.enabledRules.all()) {
       if (rule.source_channel !== event.channel || rule.source_chat_id !== event.chatId) continue;
-      if (rule.mode === 'links' && !/https?:\/\/\S+/i.test(event.text)) continue;
+      if (rule.mode === 'links' && !/https?:\/\/\S+/i.test(normalizeShareText(event.text))) continue;
       actions.push({ type: 'forward', channel: rule.target_channel, target: rule.target, text: event.text, plugin: `Rule #${rule.id}` });
     }
   }
@@ -267,9 +267,11 @@ function rebateAutomation() {
   } catch { return { enabled: false, reply: true, image: false, template: defaultRebateTemplate }; }
 }
 async function convert(input) {
-  const url = String(input.url || '').trim();
+  const urls = productUrls(String(input.url || '').trim(), platformFor);
+  if (!urls.length) throw Object.assign(new Error('未识别到商品链接，请粘贴京东、淘宝或拼多多链接，或包含链接的 APP 分享文案'), { status: 400 });
+  if (urls.length > 1) throw Object.assign(new Error('检测到多个商品链接，请每次只测试一个；群消息自动转链可处理多个链接'), { status: 400 });
+  const [url] = urls;
   const platform = platformFor(url);
-  if (!platform) throw Object.assign(new Error('Use a JD, Taobao or Pinduoduo product URL'), { status: 400 });
   const config = rebateConfig(platform);
   if (!rebateConfigured(platform, config)) {
     throw Object.assign(new Error('Configure an affiliate connector first'), { status: 400 });

@@ -10,6 +10,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { applyRebates, formatRebate, imageUrl, productUrls, validateRebateTemplate } from '../rebate-automation.js';
 import { oneBotEvent, sendQq } from '../qq-bridge.js';
 
+const appShareUrl = 'https://3.cn/35-zYL9p?jkl=@U55sUCWNwMY6@';
+const appShareText = `【京东】${appShareUrl} MF8335 「小米平板9 Pro【国家补贴】」\n点击链接直接打开 或者复制文案打开京东`;
+
 async function freePort() {
   const socket = net.createServer();
   await new Promise(resolve => socket.listen(0, '127.0.0.1', resolve));
@@ -21,7 +24,7 @@ async function freePort() {
 test('setup, plugin lifecycle, webhook, and official rebate configuration', async () => {
   const dataDir = mkdtempSync(path.join(tmpdir(), 'ownman-test-'));
   const port = await freePort();
-  const process = spawn(globalThis.process.execPath, ['server.js'], {
+  const process = spawn(globalThis.process.execPath, ['--import', './affiliate-fetch-mock.fixture.js', 'server.js'], {
     cwd: path.join(import.meta.dirname, '..'),
     env: { ...globalThis.process.env, PORT: String(port), DATA_DIR: dataDir },
     stdio: 'ignore'
@@ -144,6 +147,31 @@ test('setup, plugin lifecycle, webhook, and official rebate configuration', asyn
     const overview = (await request('/api/overview')).result;
     assert.equal(overview.providers.jd, 'live');
     assert.equal(overview.providerTypes.jd, 'zhetaoke');
+    for (const text of [appShareUrl, appShareText, appShareText.replace('https:', 'https\\:')]) {
+      const conversion = await request('/api/rebates/convert', 'POST', { url: text });
+      assert.equal(conversion.status, 200, conversion.result.error);
+      assert.equal(conversion.result.sourceUrl, appShareUrl);
+      assert.equal(conversion.result.resultUrl, 'https://u.jd.com/share-test');
+    }
+    const multiple = await request('/api/rebates/convert', 'POST', { url: `${appShareText}\nhttps://item.jd.com/456.html` });
+    assert.equal(multiple.status, 400);
+    assert.match(multiple.result.error, /多个商品链接/);
+    const noUrl = await request('/api/rebates/convert', 'POST', { url: '【京东】只有口令没有链接' });
+    assert.equal(noUrl.status, 400);
+    assert.match(noUrl.result.error, /未识别到商品链接/);
+    const shareRule = await request('/api/forwards', 'POST', { sourceChannel: 'qq', sourceChatId: '123', targetChannel: 'qq', target: 'group:789', mode: 'links' });
+    await request('/api/rebates/automation', 'PUT', { enabled: true, reply: true });
+    for (const text of [appShareText, appShareText.replace('https:', 'https\\:')]) {
+      const received = await request('/api/events', 'POST', { channel: 'qq', chatId: '123', text }, { 'X-Webhook-Token': token });
+      assert.equal(received.status, 200);
+      assert.equal(received.result.conversions[0].sourceUrl, appShareUrl);
+      assert.ok(received.result.actions.some(a => a.type === 'reply' && a.text.includes('https://u.jd.com/share-test')));
+      const forwarded = received.result.actions.find(a => a.type === 'forward');
+      assert.ok(forwarded.text.includes('https://u.jd.com/share-test'));
+      assert.ok(!forwarded.text.includes('3.cn/'));
+    }
+    await request(`/api/forwards/${shareRule.result.id}`, 'DELETE');
+    await request('/api/rebates/automation', 'PUT', { enabled: false, reply: true });
     assert.equal((await request('/api/rebates', 'PUT', { platform: 'jd', provider: 'official' })).status, 200);
     assert.equal((await request('/api/rebates')).result.providers.jd.ztkAppKey, 'ztk-key');
     assert.equal((await request('/api/rebates', 'PUT', { platform: 'taobao', appKey: 'app-key', appSecret: 'secret', adzoneId: 'bad' })).status, 400);
@@ -168,6 +196,26 @@ test('setup, plugin lifecycle, webhook, and official rebate configuration', asyn
     await exited;
     rmSync(dataDir, { recursive: true, force: true });
   }
+});
+
+test('APP sharing text extracts intact product URLs with Chinese quotes and escaped schemes', () => {
+  const platformFor = value => {
+    try { return ['3.cn', 'item.jd.com', 'item.taobao.com', 'mobile.yangkeduo.com'].includes(new URL(value).hostname); }
+    catch { return false; }
+  };
+  for (const text of [appShareText, `【京东】${appShareUrl}「商品」`, `（${appShareUrl}）。`, appShareText.replace('https:', 'https\\:'), appShareText.replace('https://', 'https:\\/\\/'), `${appShareUrl}\n${appShareUrl}`]) {
+    assert.deepEqual(productUrls(text, platformFor), [appShareUrl]);
+  }
+  assert.deepEqual(productUrls('【淘宝】https://item.taobao.com/item.htm?id=123&x=%40a%40「商品」', platformFor), ['https://item.taobao.com/item.htm?id=123&x=%40a%40']);
+  assert.deepEqual(productUrls('https://item.jd.com.evil.example/1.html', platformFor), []);
+  assert.deepEqual(productUrls('只有口令没有网址', platformFor), []);
+});
+
+test('failed conversion blocks forwarding of an escaped APP share URL', async () => {
+  const text = appShareText.replace('https:', 'https\\:');
+  const result = await applyRebates({ text }, { actions: [{ type: 'forward', text }], errors: [] }, { enabled: true, reply: true }, async () => { throw new Error('Permission denied'); }, url => url.startsWith('https://3.cn/'), () => {});
+  assert.equal(result.actions[0].type, 'blocked');
+  assert.equal(result.actions.some(action => action.type === 'reply'), false);
 });
 
 test('affiliate automation replaces forward links and blocks forwarding on failure', async () => {

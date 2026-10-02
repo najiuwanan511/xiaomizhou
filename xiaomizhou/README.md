@@ -178,6 +178,8 @@ xiaomizhou 适配器安装。下一阶段需要选择独立运行的 iLink/ClawB
 
 在「返利转链」页选择平台。京东新增「折京客」接入方式：填写折京客 AppKey 和已在折京客授权的京东联盟 ID，无需京东 AppSecret；首次测试保持「请求商品详情」关闭。图片、佣金数据需另行获得折京客审核，详见[接入教程](docs/affiliate-jd-taobao.md)。
 
+测试框支持直接粘贴手机 APP 复制的整段分享文案，自动提取商品链接并保留短链参数，无需手动删除商品标题和打开提示。每次测试一个商品；没有 URL 的纯口令暂不支持。
+
 京东选择「官方直连」时填写联盟应用的 AppKey、AppSecret。淘宝、拼多多继续填写对应官方联盟凭据。
 默认的 QQ / 微信社交媒体模式调用 `jd.union.open.promotion.bysubunionid.get`，需向京东联盟
 申请接口权限，推广位 ID 可选。网站 / APP 模式调用 `jd.union.open.promotion.common.get`，

@@ -207,8 +207,13 @@ export async function convertOfficial(platform, url, config, { fetcher = fetch, 
   throw Object.assign(new Error('Official connector is unavailable for this platform'), { status: 400 });
 }
 
+export function normalizeShareText(text) {
+  // Some copied Markdown escapes the colon or slashes in the URL scheme.
+  return String(text).replace(/https?\\?:\\?\/\\?\//gi, scheme => scheme.replaceAll('\\', ''));
+}
+
 export function productUrls(text, platformFor) {
-  const found = String(text).match(/https?:\/\/[^\s<>"'\u3000]+/gi) || [];
+  const found = normalizeShareText(text).match(/https?:\/\/[^\s<>"'\\\u3000【】「」『』“”‘’（）]+/gi) || [];
   return [...new Set(found.map(url => url.replace(/[.,!?:;\u3002\uff0c\uff01\uff1f\uff1a\uff1b)\]\u3011]+$/u, '')).filter(url => platformFor(url)))].slice(0, 5);
 }
 
@@ -224,8 +229,8 @@ export async function applyRebates(event, result, config, convert, platformFor, 
       const picture = config.image && imageUrl(conversion.imageUrl);
       const images = picture ? [{ url: picture }] : [];
       for (const action of result.actions) {
-        if (action.type === 'forward' && action.text.includes(url)) {
-          action.text = action.text.replaceAll(url, message);
+        if (action.type === 'forward' && normalizeShareText(action.text).includes(url)) {
+          action.text = normalizeShareText(action.text).replaceAll(url, message);
           if (images.length) action.images = [...(action.images || []), ...images];
         }
       }
@@ -233,7 +238,7 @@ export async function applyRebates(event, result, config, convert, platformFor, 
       log('info', 'rebate', `${conversion.platform} automatic conversion`);
     } catch (error) {
       for (const action of result.actions) {
-        if (action.type === 'forward' && action.text.includes(url)) {
+        if (action.type === 'forward' && normalizeShareText(action.text).includes(url)) {
           action.type = 'blocked';
           action.reason = 'Affiliate conversion failed';
         }
