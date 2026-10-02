@@ -10,7 +10,7 @@ import { oneBotEvent, qqDestination, oneBotCall, sendQq } from './qq-bridge.js';
 import { createQqBotBridge, qqBotDestination } from './qqbot-bridge.js';
 import { createWecomBridge, wecomCallback, wecomDestination, wecomEvent } from './wecom-bridge.js';
 import { applyRebates, convertOfficial, defaultRebateTemplate, formatRebate, validateRebateTemplate } from './rebate-automation.js';
-import { aiConfig, conversationKey, generateAiReply, normalizeAiConfig, shouldAnswer } from './ai-brain.js';
+import { aiConfig, conversationKey, generateAiReply, normalizeAiConfig, parseAiConfigRequest, shouldAnswer } from './ai-brain.js';
 import { checkUpdate, installUpdate } from './update-manager.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -31,6 +31,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS forward_rules (id INTEGER PRIMARY KEY, source_channel TEXT NOT NULL, source_chat_id TEXT NOT NULL, target_channel TEXT NOT NULL, target TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'all', enabled INTEGER NOT NULL DEFAULT 1);
   CREATE TABLE IF NOT EXISTS ai_turns (delivery_key TEXT PRIMARY KEY, conversation_key TEXT NOT NULL, user_text TEXT NOT NULL, assistant_text TEXT NOT NULL, created_at TEXT NOT NULL);
   CREATE INDEX IF NOT EXISTS ai_turns_conversation ON ai_turns(conversation_key, created_at DESC);
+  CREATE TABLE IF NOT EXISTS ai_config_proposals (id INTEGER PRIMARY KEY, channel TEXT NOT NULL, chat_id TEXT NOT NULL, user_id TEXT NOT NULL, setting_key TEXT NOT NULL, value TEXT NOT NULL, label TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL);
 `);
 
 const q = {
@@ -55,6 +56,12 @@ const aiTurn = db.prepare('SELECT assistant_text FROM ai_turns WHERE delivery_ke
 const aiHistory = db.prepare('SELECT user_text,assistant_text FROM ai_turns WHERE conversation_key=? ORDER BY created_at DESC LIMIT 6');
 const saveAiTurn = db.prepare('INSERT OR IGNORE INTO ai_turns(delivery_key,conversation_key,user_text,assistant_text,created_at) VALUES(?,?,?,?,?)');
 const pruneAiTurns = db.prepare('DELETE FROM ai_turns WHERE created_at < ? OR delivery_key NOT IN (SELECT delivery_key FROM ai_turns ORDER BY created_at DESC LIMIT 5000)');
+const aiProposals = db.prepare("SELECT * FROM ai_config_proposals WHERE status='pending' ORDER BY id DESC LIMIT 20");
+const pendingAiProposal = db.prepare("SELECT id FROM ai_config_proposals WHERE status='pending' AND channel=? AND chat_id=? AND user_id=? AND setting_key=?");
+const insertAiProposal = db.prepare('INSERT INTO ai_config_proposals(channel,chat_id,user_id,setting_key,value,label,created_at) VALUES(?,?,?,?,?,?,?)');
+const updateAiProposal = db.prepare('UPDATE ai_config_proposals SET value=?,label=?,created_at=? WHERE id=?');
+const getAiProposal = db.prepare('SELECT * FROM ai_config_proposals WHERE id=?');
+const settleAiProposal = db.prepare("UPDATE ai_config_proposals SET status=? WHERE id=? AND status='pending'");
 const qqInFlight = new Set();
 const qqStatus = { lastEventAt: null, lastError: null };
 function log(level, area, message) {
@@ -173,6 +180,21 @@ async function processIncoming(event) {
   const config = getAiConfig();
   const prompt = shouldAnswer(event, result, config);
   if (!prompt) return result;
+  const proposal = parseAiConfigRequest(prompt);
+  if (proposal) {
+    try {
+      const value = ['webSearch', 'enabled'].includes(proposal.key) ? proposal.value === 'true' : proposal.value;
+      normalizeAiConfig({ ...config, [proposal.key]: value }, config);
+      const existing = pendingAiProposal.get(event.channel, event.chatId, event.userId, proposal.key);
+      if (existing) updateAiProposal.run(proposal.value, proposal.label, now(), existing.id);
+      else if (aiProposals.all().length < 20) insertAiProposal.run(event.channel, event.chatId, event.userId, proposal.key, proposal.value, proposal.label, now());
+      else throw new Error('待审核的配置请求已满，请管理员先处理');
+      result.actions.push({ type: 'reply', text: `已提交“${proposal.label}”申请。管理员需在 AI 大脑页面确认，确认前配置不会改变。`, plugin: 'AI' });
+    } catch (error) {
+      result.actions.push({ type: 'reply', text: `无法提交配置申请：${error.message}`, plugin: 'AI' });
+    }
+    return result;
+  }
   try {
     const key = event.deliveryKey || `test:${crypto.randomUUID()}`;
     const conversation = conversationKey(event);
@@ -417,6 +439,23 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/api/settings') return json(res, 200, { name: getSetting('name', 'xiaomizhou'), webhookToken: getSetting('webhookToken') });
     if (req.method === 'PUT' && pathname === '/api/settings') { const input = await body(req); putSetting.run('name', String(input.name || 'xiaomizhou').slice(0, 60)); return json(res, 200, { ok: true }); }
     if (req.method === 'GET' && pathname === '/api/ai') return json(res, 200, publicAiConfig());
+    if (req.method === 'GET' && pathname === '/api/ai/proposals') return json(res, 200, { proposals: aiProposals.all().map(({ id, channel, chat_id, user_id, setting_key, value, label, created_at }) => ({ id, channel, chatId: chat_id, userId: user_id, key: setting_key, value, label, createdAt: created_at })) });
+    const proposalMatch = /^\/api\/ai\/proposals\/(\d+)\/(approve|reject)$/.exec(pathname);
+    if (req.method === 'POST' && proposalMatch) {
+      const proposal = getAiProposal.get(Number(proposalMatch[1]));
+      if (!proposal || proposal.status !== 'pending') return fail(res, 404, 'Pending proposal not found');
+      if (proposalMatch[2] === 'approve') {
+        if (!['webSearch', 'timeZone', 'model', 'enabled'].includes(proposal.setting_key)) return fail(res, 400, 'Unsupported AI setting');
+        const current = getAiConfig();
+        const value = ['webSearch', 'enabled'].includes(proposal.setting_key) ? proposal.value === 'true' : proposal.value;
+        const config = normalizeAiConfig({ ...current, [proposal.setting_key]: value }, current);
+        putSetting.run('ai.config', JSON.stringify(config));
+      }
+      settleAiProposal.run(proposalMatch[2] === 'approve' ? 'approved' : 'rejected', proposal.id);
+      db.prepare("DELETE FROM ai_config_proposals WHERE status!='pending' AND id NOT IN (SELECT id FROM ai_config_proposals ORDER BY id DESC LIMIT 200)").run();
+      log('info', 'ai', `Configuration proposal #${proposal.id} ${proposalMatch[2] === 'approve' ? 'approved' : 'rejected'}`);
+      return json(res, 200, { ok: true });
+    }
     if (req.method === 'PUT' && pathname === '/api/ai') {
       const config = normalizeAiConfig(await body(req), getAiConfig());
       putSetting.run('ai.config', JSON.stringify(config));
