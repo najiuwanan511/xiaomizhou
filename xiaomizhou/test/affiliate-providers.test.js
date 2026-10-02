@@ -49,8 +49,55 @@ test('Zhetaoke refuses unauthorized, malformed and insecure responses', async ()
     [{ status: 200, content: [{ shorturl: 'http://u.jd.com/unsafe' }] }, /HTTPS/],
     [{ status: 200, content: [] }, /未返回/]
   ]) await assert.rejects(convertAffiliate('jd', 'https://item.jd.com/123.html', ztkConfig, { fetcher: mockResponse(payload) }), pattern);
-  await assert.rejects(convertAffiliate('taobao', 'https://item.taobao.com/a', ztkConfig), /仅支持京东/);
+  await assert.rejects(convertAffiliate('pdd', 'https://mobile.yangkeduo.com/a', ztkConfig), /仅支持京东和淘宝/);
   await assert.rejects(convertAffiliate('jd', 'https://item.jd.com/123.html', { ...ztkConfig, unionId: 'bad' }), /必须为数字/);
+});
+
+const ztkTaobaoConfig = { provider: 'zhetaoke', ztkAppKey: 'tb-key', ztkSid: 'sid-123', ztkPid: 'mm_111_222_333', ztkRelationId: '456', appSecret: 'not-sent' };
+
+test('Zhetaoke Taobao sends authorized SID, complete PID and RID and returns metadata', async () => {
+  const source = 'https://e.tb.cn/h.example?tk=abc%2Bdef&x=1';
+  const result = await convertAffiliate('taobao', source, ztkTaobaoConfig, {
+    fetcher: async (endpoint, options) => {
+      assert.equal(endpoint, 'https://api.zhetaoke.com:10001/api/open_gaoyongzhuanlian_tkl.ashx');
+      assert.equal(options.method, 'POST');
+      assert.equal(options.redirect, 'error');
+      assert.deepEqual(Object.fromEntries(new URLSearchParams(options.body.toString())), {
+        appkey: 'tb-key', sid: 'sid-123', pid: 'mm_111_222_333', tkl: source, signurl: '5', relation_id: '456'
+      });
+      return mockResponse({ status: 200, content: [{ shorturl: 'https://s.click.taobao.com/promo', title: '淘宝商品', tkl: '￥newcode￥', pict_url: 'https://img.alicdn.com/item.jpg', tkfee3: '3.20' }] })();
+    }
+  });
+  assert.deepEqual(result, { resultUrl: 'https://s.click.taobao.com/promo', name: '淘宝商品', code: '￥newcode￥', imageUrl: 'https://img.alicdn.com/item.jpg', estimate: 3.2 });
+});
+
+test('Zhetaoke Taobao retains channel attribution on fallback links and omits unknown commission', async () => {
+  const result = await convertAffiliate('taobao', 'https://e.tb.cn/h.example', ztkTaobaoConfig, {
+    fetcher: mockResponse({ status: '200', content: [{ item_url: 'https://s.click.taobao.com/t?e=a%2Bb&relationId=old', tkfee3: '' }] })
+  });
+  const link = new URL(result.resultUrl);
+  assert.equal(link.searchParams.get('e'), 'a+b');
+  assert.equal(link.searchParams.get('relationId'), '456');
+  assert.equal(result.estimate, undefined);
+  await convertAffiliate('taobao', 'https://e.tb.cn/h.example', { ...ztkTaobaoConfig, ztkRelationId: '' }, {
+    fetcher: async (_endpoint, options) => {
+      assert.equal(options.body.has('relation_id'), false);
+      return mockResponse({ status: 200, content: [{ coupon_click_url: 'https://uland.taobao.com/coupon/edetail?e=abc', pict_url: 'http://img.alicdn.com/item.jpg', tkfee3: 'bad' }] })();
+    }
+  }).then(value => { assert.equal(value.resultUrl, 'https://uland.taobao.com/coupon/edetail?e=abc'); assert.equal(value.imageUrl, undefined); assert.equal(value.estimate, undefined); });
+});
+
+test('Zhetaoke Taobao rejects incomplete credentials, authorization failures and malformed results', async () => {
+  for (const config of [{ ...ztkTaobaoConfig, ztkSid: '' }, { ...ztkTaobaoConfig, ztkPid: '333' }, { ...ztkTaobaoConfig, ztkRelationId: 'bad' }]) {
+    await assert.rejects(convertAffiliate('taobao', 'https://e.tb.cn/h.example', config), error => error.status === 400);
+  }
+  for (const [payload, pattern] of [
+    [{ status: 301, content: '授权失效' }, /301.*授权失效/],
+    [{ error_response: { code: 15, sub_msg: '宝贝已下架或非淘客宝贝' } }, /15.*已下架/],
+    [{ status: 200, content: [] }, /未返回/],
+    [null, /未返回/],
+    [{ status: 200, content: [{ shorturl: 'http://example.com/a', taobao_url: 'https://item.taobao.com/item.htm?id=1' }] }, /HTTPS/]
+  ]) await assert.rejects(convertAffiliate('taobao', 'https://e.tb.cn/h.example', ztkTaobaoConfig, { fetcher: mockResponse(payload) }), pattern);
 });
 
 test('JD accepts getResult envelopes and short-only links without accepting failed wrappers', async () => {

@@ -1,6 +1,6 @@
 # 京粉与淘宝联盟对接 xiaomizhou
 
-本文介绍京东官方直连、折京客接入与淘宝官方接口配置；拼多多使用多多进宝官方转链接口。
+本文介绍京东官方直连、折京客接入、淘宝官方直连和折淘客接入；拼多多使用多多进宝官方转链接口。
 
 ## 开始前确认
 
@@ -34,6 +34,18 @@ v0.3.7 起，「链接 / 分享文案测试」可直接粘贴手机 APP 复制�
 京东接口说明：[联盟 API 列表](https://jos.jd.com/apilist?apiGroupId=531&apiGroupName=%E4%BA%AC%E4%B8%9C%E8%81%94%E7%9B%9Fapi)、[联盟开放平台](https://union.jd.com/openplatform)。权限申请条件和审核结果以平台账号实际显示为准。
 
 ## 二、淘宝联盟
+
+### 方式 A：折淘客（v0.3.8 新增）
+
+1. 登录[折淘客](https://www.zhetaoke.com/)，在[授权管理](https://www.zhetaoke.com/user/shouquan.html)授权自己的淘宝联盟账号，取得对应 SID；从[对接密钥](https://www.zhetaoke.com/user/open/open_appkey.aspx)获取折淘客 AppKey。
+2. 在淘宝联盟取得完整 PID，格式为 `mm_数字_数字_数字`，并在[折淘客 PID 管理](https://www.zhetaoke.com/user/extend/extend_mypid.aspx)核对设置。PID 必须属于 SID 授权的同一个淘宝账号；这里填写完整 PID，不是官方直连的第三段推广位 ID。
+3. 根据[折淘客高佣转链接口文档](https://www.zhetaoke.com/user/open/open_gaoyongzhuanlian_tkl.aspx)，处理手机淘宝复制的内容，需要代理类型 SID、渠道 PID 和对应渠道关系 ID（RID）。RID 在淘宝联盟渠道管理中获取，填写到小米粥的「渠道关系 ID（RID）」；其他无需渠道归因的场景可留空。仅有 SID、PID 不代表手机 APP 转链权限已满足，具体授权类型以折淘客后台为准。
+4. 小米粥「返利转链 → 淘宝 → 接入方式」选择「折淘客」，填写 AppKey、SID、完整 PID 和所需 RID 并保存。不需要淘宝应用 AppSecret；不会复用京东联盟 ID 作为淘宝授权。
+5. 粘贴淘宝 APP 分享的整段文案，或淘宝／天猫商品链接、`e.tb.cn`／`m.tb.cn` 短链，执行测试。程序会自动提取链接并保留参数。没有 URL 的纯淘口令暂不支持。先核对推广链接和订单归因，再开启自动回复和群转发。
+
+接口提供的商品名、淘口令、图片和预估佣金用于现有模板；发送图片仍由「附带商品图片」开关控制。缺失字段不补造，预估佣金不等于用户最终到账返利。切换回官方直连会保留折淘客参数；修改配置后需保存才用于实际转链。
+
+### 方式 B：淘宝官方直连
 
 1. 登录[淘宝联盟](https://pub.alimama.com/)，确认推广者账号及媒体备案。按[官方新手指南](https://developer.alibaba.com/docs/doc.htm?articleId=118970&docType=1&treeId=713)，媒体备案审核通过后申请 AppKey，并在联盟开放平台创建与该媒体关联的应用，取得 AppKey、AppSecret。已有淘宝联盟推广账号但没有应用密钥时，需要先完成这一步。
 2. 在联盟后台建立或找到用于这次投放的推广位及其 PID。PID 形如 `mm_第一段_第二段_第三段`；xiaomizhou 的「推广位 ID」只填**第三段数字**，不要填完整 PID。该 ID 应属于你自己的推广账号和备案媒体。

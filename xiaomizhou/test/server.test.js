@@ -160,6 +160,40 @@ test('setup, plugin lifecycle, webhook, and official rebate configuration', asyn
     assert.equal(noUrl.status, 400);
     assert.match(noUrl.result.error, /未识别到商品链接/);
     const shareRule = await request('/api/forwards', 'POST', { sourceChannel: 'qq', sourceChatId: '123', targetChannel: 'qq', target: 'group:789', mode: 'links' });
+    const tbConfig = { platform: 'taobao', provider: 'zhetaoke', ztkAppKey: 'tb-key', ztkSid: 'tb-sid', ztkPid: 'mm_111_222_333', ztkRelationId: '456' };
+    for (const invalid of [{ ...tbConfig, ztkSid: '' }, { ...tbConfig, ztkPid: '333' }, { ...tbConfig, ztkRelationId: 'bad' }, { ...tbConfig, platform: 'pdd' }]) {
+      assert.equal((await request('/api/rebates', 'PUT', invalid)).status, 400);
+    }
+    assert.equal((await request('/api/rebates', 'PUT', { platform: 'taobao', appKey: 'tb-official-key', appSecret: 'tb-official-secret', adzoneId: '333' })).status, 200);
+    assert.equal((await request('/api/rebates', 'PUT', tbConfig)).status, 200);
+    const savedTb = (await request('/api/rebates')).result.providers.taobao;
+    assert.equal(savedTb.ztkSid, 'tb-sid');
+    assert.equal(savedTb.ztkPid, 'mm_111_222_333');
+    assert.equal(savedTb.ztkRelationId, '456');
+    assert.equal(savedTb.configured, true);
+    assert.equal(savedTb.appSecret, 'tb-official-secret');
+    assert.equal((await request('/api/overview')).result.providers.taobao, 'live');
+    const tbUrls = ['https://e.tb.cn/h.test?tk=abc%2Bdef&x=1', 'https://m.tb.cn/h.test', 'https://detail.tmall.com/item.htm?id=123'];
+    for (const url of tbUrls) {
+      const text = `【淘宝】${url}「测试商品」\n点击链接直接打开 或者 淘宝搜索直接打开`;
+      const converted = await request('/api/rebates/convert', 'POST', { url: text });
+      assert.equal(converted.status, 200, converted.result.error);
+      assert.equal(converted.result.platform, 'taobao');
+      assert.equal(converted.result.provider, 'zhetaoke');
+      assert.equal(converted.result.sourceUrl, url);
+      assert.equal(converted.result.resultUrl, 'https://s.click.taobao.com/share-test');
+      assert.match(converted.result.formattedText, /newcode/);
+    }
+    await request('/api/rebates/automation', 'PUT', { enabled: true, reply: true, image: true });
+    const mixed = await request('/api/events', 'POST', { channel: 'qq', chatId: '123', text: `【淘宝】${tbUrls[0].replace('https:', 'https\\:')}「测试商品」\n${appShareText}` }, { 'X-Webhook-Token': token });
+    assert.equal(mixed.result.conversions.length, 2);
+    assert.ok(mixed.result.actions.some(a => a.type === 'reply' && a.text.includes('https://s.click.taobao.com/share-test') && a.images[0].url === 'https://img.alicdn.com/item.jpg'));
+    const mixedForward = mixed.result.actions.find(a => a.type === 'forward');
+    assert.ok(mixedForward.text.includes('https://s.click.taobao.com/share-test'));
+    assert.ok(mixedForward.text.includes('https://u.jd.com/share-test'));
+    assert.ok(!mixedForward.text.includes('e.tb.cn/'));
+    assert.equal((await request('/api/rebates', 'PUT', { platform: 'taobao', provider: 'official' })).status, 200);
+    assert.equal((await request('/api/rebates')).result.providers.taobao.ztkSid, 'tb-sid');
     await request('/api/rebates/automation', 'PUT', { enabled: true, reply: true });
     for (const text of [appShareText, appShareText.replace('https:', 'https\\:')]) {
       const received = await request('/api/events', 'POST', { channel: 'qq', chatId: '123', text }, { 'X-Webhook-Token': token });

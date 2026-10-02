@@ -6,6 +6,7 @@ const jdEndpoint = 'https://router.jd.com/api';
 const taobaoEndpoint = 'https://eco.taobao.com/router/rest';
 const pddEndpoint = 'https://gw-api.pinduoduo.com/api/router';
 const zhetaokeEndpoint = 'https://api.zhetaoke.com:20001/api/open_jing_union_open_promotion_byunionid_get.ashx';
+const zhetaokeTaobaoEndpoint = 'https://api.zhetaoke.com:10001/api/open_gaoyongzhuanlian_tkl.ashx';
 export const defaultRebateTemplate = '商品：{{name}}\n返利链接：{{url}}\n返利口令：{{code}}\n预计返利：{{estimate}}';
 
 export function validateRebateTemplate(value) {
@@ -109,12 +110,13 @@ function jdResult(payload, method) {
 }
 
 export function rebateConfigured(platform, config) {
-  return config.mode === 'live' && (config.provider === 'official' || (platform === 'jd' && config.provider === 'zhetaoke'));
+  return config.mode === 'live' && (config.provider === 'official' || (['jd', 'taobao'].includes(platform) && config.provider === 'zhetaoke'));
 }
 
 export async function convertAffiliate(platform, url, config, options = {}) {
   if (config.provider !== 'zhetaoke') return convertOfficial(platform, url, config, options);
-  if (platform !== 'jd') throw Object.assign(new Error('折京客接入目前仅支持京东'), { status: 400 });
+  if (platform === 'taobao') return convertZhetaokeTaobao(url, config, options);
+  if (platform !== 'jd') throw Object.assign(new Error('折淘客接入目前仅支持京东和淘宝'), { status: 400 });
   required(config, [['ztkAppKey', '折京客 AppKey'], ['unionId', '京东联盟 ID']]);
   if (!/^\d+$/.test(config.unionId) || (config.ztkPositionId && !/^\d+$/.test(config.ztkPositionId))) {
     throw Object.assign(new Error('京东联盟 ID 和折京客推广位必须为数字'), { status: 400 });
@@ -135,6 +137,44 @@ export async function convertAffiliate(platform, url, config, options = {}) {
   const item = Array.isArray(payload.content) ? payload.content[0] : null;
   const resultUrl = httpsUrl(item?.shorturl) || httpsUrl(item?.coupon_click_url);
   if (String(payload.status) !== '200' || !resultUrl) throw new Error('折京客未返回有效的 HTTPS 推广链接；可关闭商品详情选项后重试基础转链。');
+  const picture = imageUrl(item.pict_url);
+  const estimate = item.tkfee3 != null && String(item.tkfee3).trim() !== '' ? Number(item.tkfee3) : NaN;
+  return {
+    resultUrl, name: cleanField(item.title || item.tao_title), code: cleanField(item.tkl),
+    ...(Number.isFinite(estimate) && estimate >= 0 ? { estimate } : {}),
+    ...(picture ? { imageUrl: picture } : {})
+  };
+}
+
+async function convertZhetaokeTaobao(url, config, { fetcher = fetch } = {}) {
+  required(config, [['ztkAppKey', '折淘客 AppKey'], ['ztkSid', '折淘客授权 SID'], ['ztkPid', '淘宝完整 PID']]);
+  if (!/^mm_\d+_\d+_\d+$/.test(config.ztkPid)) throw Object.assign(new Error('淘宝 PID 须为完整的 mm_数字_数字_数字 格式'), { status: 400 });
+  if (config.ztkRelationId && !/^\d+$/.test(config.ztkRelationId)) throw Object.assign(new Error('渠道关系 ID（RID）须为数字'), { status: 400 });
+  const payload = await postForm(zhetaokeTaobaoEndpoint, {
+    appkey: config.ztkAppKey, sid: config.ztkSid, pid: config.ztkPid,
+    tkl: url, signurl: '5', ...(config.ztkRelationId ? { relation_id: config.ztkRelationId } : {})
+  }, fetcher);
+  if (payload?.error_response) {
+    const error = payload.error_response;
+    throw new Error(`折淘客 ${error.code || 'error'}: ${error.sub_msg || error.msg || '转链失败'}`);
+  }
+  if (payload?.status != null && String(payload.status) !== '200') {
+    const message = typeof payload.content === 'string' ? payload.content : payload.msg || payload.message || '转链失败';
+    throw new Error(`折淘客 ${payload.status}: ${message}；请检查 SID 授权、PID 与 RID 是否匹配。`);
+  }
+  const item = Array.isArray(payload?.content) ? payload.content[0] : null;
+  if (String(payload?.status) !== '200' || !item) throw new Error('折淘客未返回商品转链结果');
+  let resultUrl = httpsUrl(item.shorturl) || httpsUrl(item.coupon_click_url);
+  if (!resultUrl) {
+    resultUrl = httpsUrl(item.item_url);
+    // The provider documents relationId as required on the item_url fallback.
+    if (resultUrl && config.ztkRelationId) {
+      const link = new URL(resultUrl);
+      link.searchParams.set('relationId', config.ztkRelationId);
+      resultUrl = link.href;
+    }
+  }
+  if (!resultUrl) throw new Error('折淘客未返回有效的 HTTPS 推广链接');
   const picture = imageUrl(item.pict_url);
   const estimate = item.tkfee3 != null && String(item.tkfee3).trim() !== '' ? Number(item.tkfee3) : NaN;
   return {

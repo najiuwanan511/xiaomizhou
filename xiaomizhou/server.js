@@ -554,7 +554,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && pathname === '/api/rebates') return json(res, 200, { providers: Object.fromEntries(Object.keys(platforms).map(p => {
       const config = rebateConfig(p);
-      return [p, { provider: config.provider || 'official', ztkAppKey: config.ztkAppKey || '', unionId: config.unionId || '', ztkPositionId: config.ztkPositionId || '', ztkDetails: config.ztkDetails === true, appKey: config.appKey || '', appSecret: config.appSecret || '', jdMethod: config.jdMethod || 'social', siteId: config.siteId || '', positionId: config.positionId || '', adzoneId: config.adzoneId || '', clientId: config.clientId || '', clientSecret: config.clientSecret || '', pid: config.pid || '', configured: rebateConfigured(p, config) }];
+      return [p, { provider: config.provider || 'official', ztkSid: config.ztkSid || '', ztkPid: config.ztkPid || '', ztkRelationId: config.ztkRelationId || '', ztkAppKey: config.ztkAppKey || '', unionId: config.unionId || '', ztkPositionId: config.ztkPositionId || '', ztkDetails: config.ztkDetails === true, appKey: config.appKey || '', appSecret: config.appSecret || '', jdMethod: config.jdMethod || 'social', siteId: config.siteId || '', positionId: config.positionId || '', adzoneId: config.adzoneId || '', clientId: config.clientId || '', clientSecret: config.clientSecret || '', pid: config.pid || '', configured: rebateConfigured(p, config) }];
     })) });
     if (req.method === 'GET' && pathname === '/api/rebates/automation') return json(res, 200, rebateAutomation());
     if (req.method === 'PUT' && pathname === '/api/rebates/automation') {
@@ -566,18 +566,23 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'PUT' && pathname === '/api/rebates') {
       const input = await body(req); if (!platforms[input.platform]) return fail(res, 400, 'Unknown platform');
-      if ((input.mode && input.mode !== 'live') || (input.provider && input.provider !== 'official' && !(input.platform === 'jd' && input.provider === 'zhetaoke'))) return fail(res, 400, 'Unsupported affiliate connector');
+      if ((input.mode && input.mode !== 'live') || (input.provider && input.provider !== 'official' && !(['jd', 'taobao'].includes(input.platform) && input.provider === 'zhetaoke'))) return fail(res, 400, 'Unsupported affiliate connector');
       const old = rebateConfig(input.platform);
       const config = {
         mode: 'live', provider: input.provider || 'official',
         ztkAppKey: String(input.ztkAppKey ?? old.ztkAppKey ?? '').trim(), unionId: String(input.unionId ?? old.unionId ?? '').trim(),
         ztkPositionId: String(input.ztkPositionId ?? old.ztkPositionId ?? '').trim(), ztkDetails: (input.ztkDetails ?? old.ztkDetails) === true,
+        ztkSid: String(input.ztkSid ?? old.ztkSid ?? '').trim(), ztkPid: String(input.ztkPid ?? old.ztkPid ?? '').trim(), ztkRelationId: String(input.ztkRelationId ?? old.ztkRelationId ?? '').trim(),
         appKey: String(input.appKey ?? old.appKey ?? '').trim(), appSecret: input.appSecret === '********' ? old.appSecret || '' : String(input.appSecret ?? old.appSecret ?? ''),
         jdMethod: (input.jdMethod ?? old.jdMethod) === 'site' ? 'site' : 'social', siteId: String(input.siteId ?? old.siteId ?? '').trim(),
-        positionId: String(input.positionId ?? old.positionId ?? '').trim(), adzoneId: String(input.adzoneId || '').trim(),
+        positionId: String(input.positionId ?? old.positionId ?? '').trim(), adzoneId: String(input.adzoneId ?? old.adzoneId ?? '').trim(),
         clientId: String(input.clientId || '').trim(), clientSecret: input.clientSecret === '********' ? old.clientSecret || '' : String(input.clientSecret || ''), pid: String(input.pid || '').trim()
       };
-      if (config.provider === 'zhetaoke') {
+      if (config.provider === 'zhetaoke' && input.platform === 'taobao') {
+        if (!config.ztkAppKey || !config.ztkSid) return fail(res, 400, '请填写折淘客 AppKey 和淘宝授权 SID');
+        if (!/^mm_\d+_\d+_\d+$/.test(config.ztkPid)) return fail(res, 400, '淘宝 PID 须为完整的 mm_数字_数字_数字 格式');
+        if (config.ztkRelationId && !/^\d+$/.test(config.ztkRelationId)) return fail(res, 400, '渠道关系 ID（RID）须为数字');
+      } else if (config.provider === 'zhetaoke') {
         if (!config.ztkAppKey || !/^\d+$/.test(config.unionId)) return fail(res, 400, '请填写折京客 AppKey 和数字格式的京东联盟 ID');
         if (config.ztkPositionId && !/^\d+$/.test(config.ztkPositionId)) return fail(res, 400, '折京客推广位必须为数字');
       } else if (input.platform === 'pdd') {
