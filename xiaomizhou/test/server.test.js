@@ -216,6 +216,15 @@ test('setup, plugin lifecycle, webhook, and official rebate configuration', asyn
       assert.match(converted.result.formattedText, /newcode/);
     }
     await request('/api/rebates/automation', 'PUT', { enabled: true, reply: true, image: true });
+    const completeTbShare = '【淘宝】https://m.tb.cn/h.needs-token「测试商品」\n￥Abc123xyZ89￥ 复制整段打开淘宝';
+    const shortOnly = await request('/api/rebates/convert', 'POST', { url: 'https://m.tb.cn/h.needs-token' });
+    assert.equal(shortOnly.status, 502);
+    assert.match(shortOnly.result.error, /商品ID解析错误.*完整商品分享文案/);
+    const fullShareConversion = await request('/api/rebates/convert', 'POST', { url: completeTbShare });
+    assert.equal(fullShareConversion.status, 200, fullShareConversion.result.error);
+    const singleTb = await request('/api/events', 'POST', { channel: 'qq', chatId: '123', text: completeTbShare.replace('https:', 'https\\:') }, { 'X-Webhook-Token': token });
+    assert.equal(singleTb.result.conversions.length, 1);
+    assert.equal(singleTb.result.conversions[0].sourceUrl, 'https://m.tb.cn/h.needs-token');
     const mixed = await request('/api/events', 'POST', { channel: 'qq', chatId: '123', text: `【淘宝】${tbUrls[0].replace('https:', 'https\\:')}「测试商品」\n${appShareText}` }, { 'X-Webhook-Token': token });
     assert.equal(mixed.result.conversions.length, 2);
     assert.ok(mixed.result.actions.some(a => a.type === 'reply' && a.text.includes('https://s.click.taobao.com/share-test') && a.images[0].url === 'https://img.alicdn.com/item.jpg'));

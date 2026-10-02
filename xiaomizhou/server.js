@@ -279,7 +279,8 @@ function rebateAutomation() {
   } catch { return { enabled: false, reply: true, image: false, template: defaultRebateTemplate }; }
 }
 async function convert(input) {
-  const urls = productUrls(String(input.url || '').trim(), platformFor);
+  const text = normalizeShareText(String(input.url || '').trim());
+  const urls = productUrls(text, platformFor);
   if (!urls.length) throw Object.assign(new Error('未识别到商品链接，请粘贴京东、淘宝或拼多多链接，或包含链接的 APP 分享文案'), { status: 400 });
   if (urls.length > 1) throw Object.assign(new Error('检测到多个商品链接，请每次只测试一个；群消息自动转链可处理多个链接'), { status: 400 });
   const [url] = urls;
@@ -289,7 +290,8 @@ async function convert(input) {
     throw Object.assign(new Error('Configure an affiliate connector first'), { status: 400 });
   }
   try {
-    const details = await convertAffiliate(platform, url, config);
+    const source = platform === 'taobao' && config.provider === 'zhetaoke' ? text : url;
+    const details = await convertAffiliate(platform, source, config);
     const result = { platform, mode: 'live', provider: config.provider, sourceUrl: url, ...details };
     return { ...result, formattedText: formatRebate(result, rebateAutomation().template) };
   } catch (error) {

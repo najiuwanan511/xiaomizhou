@@ -71,6 +71,46 @@ test('Zhetaoke Taobao sends authorized SID, complete PID and RID and returns met
   assert.deepEqual(result, { resultUrl: 'https://s.click.taobao.com/promo', name: '淘宝商品', code: '￥newcode￥', imageUrl: 'https://img.alicdn.com/item.jpg', estimate: 3.2 });
 });
 
+test('Zhetaoke Taobao retries item parsing once using the short link token, retaining attribution', async () => {
+  const source = '【淘宝】https://e.tb.cn/h.example?tk=Abc123xyZ89「商品」';
+  const calls = [];
+  const result = await convertAffiliate('taobao', source, ztkTaobaoConfig, {
+    fetcher: async (endpoint, options) => {
+      assert.equal(endpoint, 'https://api.zhetaoke.com:10001/api/open_gaoyongzhuanlian_tkl.ashx');
+      calls.push(options.body.get('tkl'));
+      assert.equal(options.body.get('sid'), 'sid-123');
+      assert.equal(options.body.get('pid'), 'mm_111_222_333');
+      assert.equal(options.body.get('relation_id'), '456');
+      assert.equal(options.body.has('jb'), false);
+      return mockResponse(calls.length === 1
+        ? { status: 301, content: '很抱歉！商品ID解析错误！！！' }
+        : { status: 200, content: [{ shorturl: 'https://s.click.taobao.com/promo' }] })();
+    }
+  });
+  assert.deepEqual(calls, [source, '￥Abc123xyZ89￥']);
+  assert.equal(result.resultUrl, 'https://s.click.taobao.com/promo');
+});
+
+test('Zhetaoke token fallback is bounded and never retries auth errors or ambiguous tokens', async () => {
+  for (const [source, payload, expectedCalls] of [
+    ['https://e.tb.cn/h.test?tk=Abc123xyZ89', { status: 301, content: '商品ID解析错误' }, 2],
+    ['https://e.tb.cn/h.test?tk=Abc123xyZ89', { status: 301, content: '授权失效' }, 1],
+    ['https://e.tb.cn/h.test?tk=Abc123xyZ89', { error_response: { code: 15, sub_msg: 'SID失效' } }, 1],
+    ['https://e.tb.cn/h.test?tk=bad', { status: 301, content: '商品ID解析错误' }, 1],
+    ['https://e.tb.cn.evil.example/h.test?tk=Abc123xyZ89', { status: 301, content: '商品ID解析错误' }, 1],
+    ['https://e.tb.cn/h.one?tk=Abc123xyZ89 https://m.tb.cn/h.two?tk=Abc123xyZ88', { status: 301, content: '商品ID解析错误' }, 1]
+  ]) {
+    let calls = 0;
+    await assert.rejects(convertAffiliate('taobao', source, ztkTaobaoConfig, {
+      fetcher: async () => { calls++; return mockResponse(payload)(); }
+    }), error => {
+      if (expectedCalls === 2) assert.match(error.message, /已尝试短链自带的淘口令/);
+      return true;
+    });
+    assert.equal(calls, expectedCalls, source);
+  }
+});
+
 test('Zhetaoke Taobao retains channel attribution on fallback links and omits unknown commission', async () => {
   const result = await convertAffiliate('taobao', 'https://e.tb.cn/h.example', ztkTaobaoConfig, {
     fetcher: mockResponse({ status: '200', content: [{ item_url: 'https://s.click.taobao.com/t?e=a%2Bb&relationId=old', tkfee3: '' }] })

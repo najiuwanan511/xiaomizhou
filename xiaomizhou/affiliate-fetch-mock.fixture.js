@@ -9,7 +9,11 @@ globalThis.fetch = async (input, options) => {
   }
   if (String(input) === 'https://api.zhetaoke.com:10001/api/open_gaoyongzhuanlian_tkl.ashx') {
     if (options.body.get('sid') === 'expired-test-sid') return new Response(JSON.stringify({ error_response: { code: 15, sub_code: 'invalid-sessionkey', sub_msg: `SID授权失效 ${options.body.get('appkey')}` } }), { headers: { 'Content-Type': 'application/json' } });
-    assert.ok(['https://e.tb.cn/h.test?tk=abc%2Bdef&x=1', 'https://m.tb.cn/h.test', 'https://detail.tmall.com/item.htm?id=123'].includes(options.body.get('tkl')));
+    const sources = ['https://e.tb.cn/h.test?tk=abc%2Bdef&x=1', 'https://m.tb.cn/h.test', 'https://detail.tmall.com/item.htm?id=123'];
+    const fullShare = '【淘宝】https://m.tb.cn/h.needs-token「测试商品」\n￥Abc123xyZ89￥ 复制整段打开淘宝';
+    if (options.body.get('tkl') === 'https://m.tb.cn/h.needs-token') return Response.json({ status: 301, content: '商品ID解析错误' });
+    const allowed = [...sources, ...sources.map(url => `【淘宝】${url}「测试商品」\n点击链接直接打开 或者 淘宝搜索直接打开`), '【淘宝】https://m.tb.cn/h.test「测试商品」', fullShare];
+    assert.ok(allowed.includes(options.body.get('tkl')), 'unexpected or truncated Taobao share text');
     assert.equal(options.body.get('sid'), 'tb-sid');
     assert.equal(options.body.get('pid'), 'mm_111_222_333');
     assert.equal(options.body.get('relation_id'), '456');

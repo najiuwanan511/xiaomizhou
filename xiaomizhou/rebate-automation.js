@@ -146,6 +146,24 @@ export async function convertAffiliate(platform, url, config, options = {}) {
   };
 }
 
+function taobaoFailureMessage(payload) {
+  return typeof payload?.content === 'string' ? payload.content : payload?.content?.msg || payload?.content?.message || payload?.msg || payload?.message || '转链失败';
+}
+
+function taobaoParseFailure(payload) {
+  return payload?.status != null && String(payload.status) !== '200' && /商品\s*ID\s*解析错误/i.test(taobaoFailureMessage(payload));
+}
+
+function shortLinkToken(text) {
+  const urls = productUrls(text, value => {
+    try { const link = new URL(value); return ['e.tb.cn', 'm.tb.cn'].includes(link.hostname) && !link.username && !link.password && !link.port; }
+    catch { return false; }
+  });
+  if (urls.length !== 1) return null;
+  const token = new URL(urls[0]).searchParams.get('tk');
+  return /^[a-zA-Z0-9]{11}$/.test(token || '') ? `￥${token}￥` : null;
+}
+
 async function convertZhetaokeTaobao(url, config, { fetcher = fetch } = {}) {
   required(config, [['ztkAppKey', '折淘客 AppKey'], ['ztkSid', '折淘客授权 SID'], ['ztkPid', '淘宝完整 PID']]);
   if (!/^mm_\d+_\d+_\d+$/.test(config.ztkPid)) throw Object.assign(new Error('淘宝 PID 须为完整的 mm_数字_数字_数字 格式'), { status: 400 });
@@ -153,11 +171,20 @@ async function convertZhetaokeTaobao(url, config, { fetcher = fetch } = {}) {
   const signurl = String(config.ztkTaobaoSignurl ?? '5');
   if (!['3', '4', '5'].includes(signurl)) throw Object.assign(new Error('折淘客转链结果类型须为 3、4 或 5'), { status: 400 });
   let payload;
+  let retriedToken = false;
   try {
-    payload = await postForm(zhetaokeTaobaoEndpoint, {
+    const fields = {
       appkey: config.ztkAppKey, sid: config.ztkSid, pid: config.ztkPid,
       tkl: url, signurl, ...(config.ztkRelationId ? { relation_id: config.ztkRelationId } : {})
-    }, fetcher, 20000);
+    };
+    // Bound both attempts to one request budget. Never retry authorization errors.
+    const deadline = Date.now() + 20000;
+    payload = await postForm(zhetaokeTaobaoEndpoint, fields, fetcher, 20000);
+    const token = taobaoParseFailure(payload) && shortLinkToken(url);
+    if (token && Date.now() < deadline) {
+      retriedToken = true;
+      payload = await postForm(zhetaokeTaobaoEndpoint, { ...fields, tkl: token }, fetcher, Math.max(1, deadline - Date.now()));
+    }
   } catch (error) {
     const code = error.cause?.code || error.code || error.name;
     if (/timeout|abort|ETIMEDOUT/i.test(code)) throw new Error('折淘客请求超时（20 秒）；请检查飞牛容器到 api.zhetaoke.com:10001 的网络。可切换基础转链后重试。');
@@ -170,8 +197,11 @@ async function convertZhetaokeTaobao(url, config, { fetcher = fetch } = {}) {
     throw new Error(`折淘客 ${error.code || 'error'} ${cleanField(error.sub_code)}: ${cleanField(error.sub_msg || error.msg || '转链失败', 500)}`);
   }
   if (payload?.status != null && String(payload.status) !== '200') {
-    const message = typeof payload.content === 'string' ? payload.content : payload.content?.msg || payload.content?.message || payload.msg || payload.message || '转链失败';
-    throw new Error(`折淘客 ${payload.status}: ${cleanField(message, 500)}；AppKey 请填淘宝板块密钥；SID 与 PID 须同账号；手淘分享需代理授权、渠道 PID 和已备案 RID。`);
+    const message = taobaoFailureMessage(payload);
+    const hint = taobaoParseFailure(payload)
+      ? `${retriedToken ? '已尝试短链自带的淘口令，仍未解析成功。' : ''}请重新复制完整商品分享文案，并在折淘客「接口在线测试」用相同参数对照；若同样失败，请在折淘客检查代理授权和商品支持情况。此错误不能单独证明 RID 填错。`
+      : '请在折淘客接口调用日志查看原因；授权错误需核对淘宝 AppKey、同账号 SID/PID，以及手淘分享所需的代理授权和 RID。';
+    throw new Error(`折淘客 ${payload.status}: ${cleanField(message, 400)}；${hint}`);
   }
   // signurl=5 wraps details in content[], while documented 3/4 responses are flat.
   const item = String(payload?.status) === '200'
@@ -274,9 +304,12 @@ export function productUrls(text, platformFor) {
 export async function applyRebates(event, result, config, convert, platformFor, log) {
   if (!config.enabled) return result;
   const conversions = [];
-  for (const url of productUrls(event.text, platformFor)) {
+  const urls = productUrls(event.text, platformFor);
+  for (const url of urls) {
     try {
-      const conversion = await convert({ url });
+      // A mixed message must never send another product's token to the provider.
+      const source = urls.length === 1 && platformFor(url) === 'taobao' ? normalizeShareText(event.text).trim() : url;
+      const conversion = await convert({ url: source });
       conversions.push(conversion);
       if (conversion.mode !== 'live') continue;
       const message = formatRebate(conversion, config.template);
