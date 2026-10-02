@@ -1,9 +1,64 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import test from 'node:test';
-import { convertOfficial, signJd, signPdd, signTaobao } from '../rebate-automation.js';
+import { convertAffiliate, convertOfficial, formatRebate, signJd, signPdd, signTaobao } from '../rebate-automation.js';
 
 const date = new Date('2026-09-30T12:34:56Z');
+const ztkConfig = { provider: 'zhetaoke', ztkAppKey: 'ztk-key', unionId: '123456', appKey: 'official-key', appSecret: 'official-secret' };
+const mockResponse = payload => async () => ({ ok: true, json: async () => payload });
+
+test('Zhetaoke dispatch uses separate credentials and encodes the product URL once', async () => {
+  const source = 'https://item.jd.com/123.html?x=1&coupon=中文';
+  const result = await convertAffiliate('jd', source, { ...ztkConfig, ztkPositionId: '12345678901234567890' }, {
+    fetcher: async (endpoint, options) => {
+      assert.equal(endpoint, 'https://api.zhetaoke.com:20001/api/open_jing_union_open_promotion_byunionid_get.ashx');
+      assert.equal(options.method, 'POST');
+      assert.equal(options.redirect, 'error');
+      assert.deepEqual(Object.fromEntries(new URLSearchParams(options.body.toString())), {
+        appkey: 'ztk-key', unionId: '123456', materialId: source, chainType: '2', signurl: '0', positionId: '12345678901234567890'
+      });
+      return mockResponse({ jd_union_open_promotion_byunionid_get_response: { code: '0', result: JSON.stringify({ code: 200, data: { shortURL: 'https://u.jd.com/ztk' } }) } })();
+    }
+  });
+  assert.deepEqual(result, { resultUrl: 'https://u.jd.com/ztk' });
+});
+
+test('Zhetaoke detail mode maps actual metadata into the existing template and image flow', async () => {
+  const result = await convertAffiliate('jd', 'https://item.jd.com/123.html', { ...ztkConfig, ztkDetails: true }, {
+    fetcher: async (_endpoint, options) => {
+      assert.equal(options.body.get('signurl'), '5');
+      assert.equal(options.body.has('positionId'), false);
+      return mockResponse({ status: 200, content: [{ title: '测试商品', shorturl: 'https://u.jd.com/ztk', pict_url: 'https://img14.360buyimg.com/test.jpg', tkfee3: '5.07', tkl: '京口令' }] })();
+    }
+  });
+  assert.equal(result.imageUrl, 'https://img14.360buyimg.com/test.jpg');
+  assert.equal(result.estimate, 5.07);
+  assert.equal(formatRebate({ ...result, mode: 'live' }), '商品：测试商品\n返利链接：https://u.jd.com/ztk\n返利口令：京口令\n预计返利：5.07 元');
+  const basic = await convertAffiliate('jd', 'https://item.jd.com/123.html', ztkConfig, {
+    fetcher: mockResponse({ status: 200, content: [{ coupon_click_url: 'https://union-click.jd.com/example', pict_url: 'https://127.0.0.1/image', tkfee3: '' }] })
+  });
+  assert.equal(basic.estimate, undefined);
+  assert.equal(basic.imageUrl, undefined);
+});
+
+test('Zhetaoke refuses unauthorized, malformed and insecure responses', async () => {
+  for (const [payload, pattern] of [
+    [{ status: 301, content: '联盟ID未授权' }, /301.*未授权/],
+    [{ jd_union_open_promotion_byunionid_get_response: { code: '0', result: '{"code":403,"message":"无访问权限"}' } }, /403.*无访问权限/],
+    [{ jd_union_open_promotion_byunionid_get_response: { result: 'bad json' } }, /invalid result JSON/],
+    [{ status: 200, content: [{ shorturl: 'http://u.jd.com/unsafe' }] }, /HTTPS/],
+    [{ status: 200, content: [] }, /未返回/]
+  ]) await assert.rejects(convertAffiliate('jd', 'https://item.jd.com/123.html', ztkConfig, { fetcher: mockResponse(payload) }), pattern);
+  await assert.rejects(convertAffiliate('taobao', 'https://item.taobao.com/a', ztkConfig), /仅支持京东/);
+  await assert.rejects(convertAffiliate('jd', 'https://item.jd.com/123.html', { ...ztkConfig, unionId: 'bad' }), /必须为数字/);
+});
+
+test('JD accepts getResult envelopes and short-only links without accepting failed wrappers', async () => {
+  const payload = { jd_union_open_promotion_bysubunionid_get_responce: { code: '0', getResult: JSON.stringify({ code: 200, data: { shortURL: 'https://u.jd.com/short' } }) } };
+  assert.deepEqual(await convertAffiliate('jd', 'https://item.jd.com/1.html', { provider: 'official', appKey: 'key', appSecret: 'secret' }, { fetcher: mockResponse(payload) }), { resultUrl: 'https://u.jd.com/short' });
+  payload.jd_union_open_promotion_bysubunionid_get_responce.code = '403';
+  await assert.rejects(convertOfficial('jd', 'https://item.jd.com/1.html', { appKey: 'key', appSecret: 'secret' }, { fetcher: mockResponse(payload) }), /JD API 403/);
+});
 
 test('official JD connector signs the request and parses the promotion link', async () => {
   const source = 'https://item.jd.com/123.html';

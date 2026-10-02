@@ -5,6 +5,7 @@ import net from 'node:net';
 const jdEndpoint = 'https://router.jd.com/api';
 const taobaoEndpoint = 'https://eco.taobao.com/router/rest';
 const pddEndpoint = 'https://gw-api.pinduoduo.com/api/router';
+const zhetaokeEndpoint = 'https://api.zhetaoke.com:20001/api/open_jing_union_open_promotion_byunionid_get.ashx';
 export const defaultRebateTemplate = '商品：{{name}}\n返利链接：{{url}}\n返利口令：{{code}}\n预计返利：{{estimate}}';
 
 export function validateRebateTemplate(value) {
@@ -92,16 +93,55 @@ async function postForm(endpoint, fields, fetcher) {
 
 function jdResult(payload, method) {
   if (payload.error_response) throw new Error(`JD API ${payload.error_response.code || 'error'}: ${payload.error_response.zh_desc || payload.error_response.en_desc || 'request failed'}`);
-  const wrapper = payload[method.replaceAll('.', '_') + '_response'];
+  const name = method.replaceAll('.', '_');
+  const wrapper = payload[name + '_response'] || payload[name + '_responce'];
   if (!wrapper) throw new Error('JD API returned an unexpected response');
   let result;
-  try { result = typeof wrapper.result === 'string' ? JSON.parse(wrapper.result) : wrapper.result; }
+  const raw = wrapper.getResult ?? wrapper.result;
+  try { result = typeof raw === 'string' ? JSON.parse(raw) : raw; }
   catch { throw new Error('JD API returned invalid result JSON'); }
-  if ((wrapper.code != null && String(wrapper.code) !== '0') || String(result?.code) !== '200') throw new Error(`JD API ${result?.code || wrapper.code || 'error'}: ${result?.message || wrapper.message || 'conversion failed'}`);
-  const url = httpsUrl(result?.data?.clickURL);
+  if (wrapper.code != null && String(wrapper.code) !== '0') throw new Error(`JD API ${wrapper.code}: ${wrapper.message || 'request failed'}`);
+  if (String(result?.code) !== '200') throw new Error(`JD API ${result?.code || 'error'}: ${result?.message || 'conversion failed'}`);
+  const url = httpsUrl(result?.data?.shortURL) || httpsUrl(result?.data?.clickURL);
   if (!url) throw new Error('JD API returned no HTTPS promotion URL');
   const picture = imageUrl(result?.data?.imageUrl || result?.data?.imgUrl);
   return { resultUrl: url, ...(picture ? { imageUrl: picture } : {}) };
+}
+
+export function rebateConfigured(platform, config) {
+  return config.mode === 'live' && (config.provider === 'official' || (platform === 'jd' && config.provider === 'zhetaoke'));
+}
+
+export async function convertAffiliate(platform, url, config, options = {}) {
+  if (config.provider !== 'zhetaoke') return convertOfficial(platform, url, config, options);
+  if (platform !== 'jd') throw Object.assign(new Error('折京客接入目前仅支持京东'), { status: 400 });
+  required(config, [['ztkAppKey', '折京客 AppKey'], ['unionId', '京东联盟 ID']]);
+  if (!/^\d+$/.test(config.unionId) || (config.ztkPositionId && !/^\d+$/.test(config.ztkPositionId))) {
+    throw Object.assign(new Error('京东联盟 ID 和折京客推广位必须为数字'), { status: 400 });
+  }
+  const payload = await postForm(zhetaokeEndpoint, {
+    appkey: config.ztkAppKey, unionId: config.unionId, materialId: url,
+    chainType: '2', signurl: config.ztkDetails ? '5' : '0',
+    ...(config.ztkPositionId ? { positionId: config.ztkPositionId } : {})
+  }, options.fetcher || fetch);
+  if (payload.status != null && String(payload.status) !== '200') {
+    const message = typeof payload.content === 'string' ? payload.content : payload.msg || payload.message || '转链失败';
+    throw new Error(`折京客 ${payload.status}: ${message}；请核对折京客 AppKey、联盟 ID 授权和接口权限。`);
+  }
+  if (payload.jd_union_open_promotion_byunionid_get_response || payload.jd_union_open_promotion_byunionid_get_responce || payload.error_response) {
+    try { return jdResult(payload, 'jd.union.open.promotion.byunionid.get'); }
+    catch (error) { throw new Error(`折京客：${error.message}；请检查京东账号授权状态。`); }
+  }
+  const item = Array.isArray(payload.content) ? payload.content[0] : null;
+  const resultUrl = httpsUrl(item?.shorturl) || httpsUrl(item?.coupon_click_url);
+  if (String(payload.status) !== '200' || !resultUrl) throw new Error('折京客未返回有效的 HTTPS 推广链接；可关闭商品详情选项后重试基础转链。');
+  const picture = imageUrl(item.pict_url);
+  const estimate = item.tkfee3 != null && String(item.tkfee3).trim() !== '' ? Number(item.tkfee3) : NaN;
+  return {
+    resultUrl, name: cleanField(item.title || item.tao_title), code: cleanField(item.tkl),
+    ...(Number.isFinite(estimate) && estimate >= 0 ? { estimate } : {}),
+    ...(picture ? { imageUrl: picture } : {})
+  };
 }
 
 function taobaoResult(payload) {

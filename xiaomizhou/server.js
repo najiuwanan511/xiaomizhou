@@ -9,7 +9,7 @@ import { runPlugin } from './plugin-runner.js';
 import { oneBotEvent, qqDestination, oneBotCall, sendQq } from './qq-bridge.js';
 import { createQqBotBridge, qqBotDestination } from './qqbot-bridge.js';
 import { createWecomBridge, wecomCallback, wecomDestination, wecomEvent } from './wecom-bridge.js';
-import { applyRebates, convertOfficial, defaultRebateTemplate, formatRebate, imageUrl, validateRebateTemplate } from './rebate-automation.js';
+import { applyRebates, convertAffiliate, rebateConfigured, defaultRebateTemplate, formatRebate, imageUrl, validateRebateTemplate } from './rebate-automation.js';
 import { aiConfig, conversationKey, generateAiReply, normalizeAiConfig, parseAiConfigRequest, shouldAnswer } from './ai-brain.js';
 import { checkUpdate, installUpdate } from './update-manager.js';
 
@@ -271,16 +271,16 @@ async function convert(input) {
   const platform = platformFor(url);
   if (!platform) throw Object.assign(new Error('Use a JD, Taobao or Pinduoduo product URL'), { status: 400 });
   const config = rebateConfig(platform);
-  if (config.mode !== 'live' || config.provider !== 'official') {
-    throw Object.assign(new Error('Configure the official affiliate connector first'), { status: 400 });
+  if (!rebateConfigured(platform, config)) {
+    throw Object.assign(new Error('Configure an affiliate connector first'), { status: 400 });
   }
   try {
-    const details = await convertOfficial(platform, url, config);
-    const result = { platform, mode: 'live', provider: 'official', sourceUrl: url, ...details };
+    const details = await convertAffiliate(platform, url, config);
+    const result = { platform, mode: 'live', provider: config.provider, sourceUrl: url, ...details };
     return { ...result, formattedText: formatRebate(result, rebateAutomation().template) };
   } catch (error) {
     let message = String(error.message || 'Official affiliate API failed');
-    for (const secret of [config.appSecret, config.clientSecret, config.appKey, config.clientId]) {
+    for (const secret of [config.appSecret, config.clientSecret, config.appKey, config.clientId, config.ztkAppKey]) {
       if (secret) message = message.replaceAll(secret, '[redacted]');
     }
     throw Object.assign(new Error(message.slice(0, 250)), { status: error.status || 502 });
@@ -421,7 +421,7 @@ const server = http.createServer(async (req, res) => {
         throw error;
       }
     }
-    if (req.method === 'GET' && pathname === '/api/overview') return json(res, 200, { pluginCount: q.plugins.all().length, enabledCount: q.enabled.all().length, recentLogs: q.logs.all().slice(0, 8), providers: Object.fromEntries(Object.keys(platforms).map(p => { const config = rebateConfig(p); return [p, config.mode === 'live' && config.provider === 'official' ? 'live' : 'unconfigured']; })), qq: publicQqConfig(), qqbot: publicQqBotConfig(), wecom: publicWecomConfig(), ai: { enabled: getAiConfig().enabled, provider: getAiConfig().provider, model: getAiConfig().model } });
+    if (req.method === 'GET' && pathname === '/api/overview') return json(res, 200, { pluginCount: q.plugins.all().length, enabledCount: q.enabled.all().length, recentLogs: q.logs.all().slice(0, 8), providerTypes: Object.fromEntries(Object.keys(platforms).map(p => [p, rebateConfig(p).provider || 'official'])), providers: Object.fromEntries(Object.keys(platforms).map(p => [p, rebateConfigured(p, rebateConfig(p)) ? 'live' : 'unconfigured'])), qq: publicQqConfig(), qqbot: publicQqBotConfig(), wecom: publicWecomConfig(), ai: { enabled: getAiConfig().enabled, provider: getAiConfig().provider, model: getAiConfig().model } });
     if (req.method === 'GET' && pathname === '/api/settings') return json(res, 200, { name: getSetting('name', 'xiaomizhou'), webhookToken: getSetting('webhookToken') });
     if (req.method === 'PUT' && pathname === '/api/settings') { const input = await body(req); putSetting.run('name', String(input.name || 'xiaomizhou').slice(0, 60)); return json(res, 200, { ok: true }); }
     if (req.method === 'GET' && pathname === '/api/ai') return json(res, 200, publicAiConfig());
@@ -552,7 +552,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && pathname === '/api/rebates') return json(res, 200, { providers: Object.fromEntries(Object.keys(platforms).map(p => {
       const config = rebateConfig(p);
-      return [p, { appKey: config.appKey || '', appSecret: config.appSecret || '', jdMethod: config.jdMethod || 'social', siteId: config.siteId || '', positionId: config.positionId || '', adzoneId: config.adzoneId || '', clientId: config.clientId || '', clientSecret: config.clientSecret || '', pid: config.pid || '', configured: config.mode === 'live' && config.provider === 'official' }];
+      return [p, { provider: config.provider || 'official', ztkAppKey: config.ztkAppKey || '', unionId: config.unionId || '', ztkPositionId: config.ztkPositionId || '', ztkDetails: config.ztkDetails === true, appKey: config.appKey || '', appSecret: config.appSecret || '', jdMethod: config.jdMethod || 'social', siteId: config.siteId || '', positionId: config.positionId || '', adzoneId: config.adzoneId || '', clientId: config.clientId || '', clientSecret: config.clientSecret || '', pid: config.pid || '', configured: rebateConfigured(p, config) }];
     })) });
     if (req.method === 'GET' && pathname === '/api/rebates/automation') return json(res, 200, rebateAutomation());
     if (req.method === 'PUT' && pathname === '/api/rebates/automation') {
@@ -564,16 +564,21 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'PUT' && pathname === '/api/rebates') {
       const input = await body(req); if (!platforms[input.platform]) return fail(res, 400, 'Unknown platform');
-      if ((input.mode && input.mode !== 'live') || (input.provider && input.provider !== 'official')) return fail(res, 400, 'Only official affiliate connectors are supported');
+      if ((input.mode && input.mode !== 'live') || (input.provider && input.provider !== 'official' && !(input.platform === 'jd' && input.provider === 'zhetaoke'))) return fail(res, 400, 'Unsupported affiliate connector');
       const old = rebateConfig(input.platform);
       const config = {
-        mode: 'live', provider: 'official',
-        appKey: String(input.appKey || '').trim(), appSecret: input.appSecret === '********' ? old.appSecret || '' : String(input.appSecret || ''),
-        jdMethod: input.jdMethod === 'site' ? 'site' : 'social', siteId: String(input.siteId || '').trim(),
-        positionId: String(input.positionId || '').trim(), adzoneId: String(input.adzoneId || '').trim(),
+        mode: 'live', provider: input.provider || 'official',
+        ztkAppKey: String(input.ztkAppKey ?? old.ztkAppKey ?? '').trim(), unionId: String(input.unionId ?? old.unionId ?? '').trim(),
+        ztkPositionId: String(input.ztkPositionId ?? old.ztkPositionId ?? '').trim(), ztkDetails: (input.ztkDetails ?? old.ztkDetails) === true,
+        appKey: String(input.appKey ?? old.appKey ?? '').trim(), appSecret: input.appSecret === '********' ? old.appSecret || '' : String(input.appSecret ?? old.appSecret ?? ''),
+        jdMethod: (input.jdMethod ?? old.jdMethod) === 'site' ? 'site' : 'social', siteId: String(input.siteId ?? old.siteId ?? '').trim(),
+        positionId: String(input.positionId ?? old.positionId ?? '').trim(), adzoneId: String(input.adzoneId || '').trim(),
         clientId: String(input.clientId || '').trim(), clientSecret: input.clientSecret === '********' ? old.clientSecret || '' : String(input.clientSecret || ''), pid: String(input.pid || '').trim()
       };
-      if (input.platform === 'pdd') {
+      if (config.provider === 'zhetaoke') {
+        if (!config.ztkAppKey || !/^\d+$/.test(config.unionId)) return fail(res, 400, '请填写折京客 AppKey 和数字格式的京东联盟 ID');
+        if (config.ztkPositionId && !/^\d+$/.test(config.ztkPositionId)) return fail(res, 400, '折京客推广位必须为数字');
+      } else if (input.platform === 'pdd') {
         if (!config.clientId || !config.clientSecret || !config.pid) return fail(res, 400, 'Client ID, Client Secret and PID are required');
       } else {
         if (!config.appKey || !config.appSecret) return fail(res, 400, 'AppKey and AppSecret are required');

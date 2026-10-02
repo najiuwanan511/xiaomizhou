@@ -176,7 +176,9 @@ xiaomizhou 适配器安装。下一阶段需要选择独立运行的 iLink/ClawB
 
 京粉与淘宝联盟的申请、字段填写和单链接验收步骤见[对接教程](docs/affiliate-jd-taobao.md)。
 
-在「返利转链」页选择平台，填写对应官方联盟凭据。京东接口填写联盟应用的 AppKey、AppSecret。
+在「返利转链」页选择平台。京东新增「折京客」接入方式：填写折京客 AppKey 和已在折京客授权的京东联盟 ID，无需京东 AppSecret；首次测试保持「请求商品详情」关闭。图片、佣金数据需另行获得折京客审核，详见[接入教程](docs/affiliate-jd-taobao.md)。
+
+京东选择「官方直连」时填写联盟应用的 AppKey、AppSecret。淘宝、拼多多继续填写对应官方联盟凭据。
 默认的 QQ / 微信社交媒体模式调用 `jd.union.open.promotion.bysubunionid.get`，需向京东联盟
 申请接口权限，推广位 ID 可选。网站 / APP 模式调用 `jd.union.open.promotion.common.get`，
 需要站点 ID / App ID，并确保与实际备案的投放来源一致。只有京粉账号不代表已有 API 权限。
