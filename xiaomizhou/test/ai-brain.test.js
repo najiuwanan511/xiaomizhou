@@ -1,20 +1,61 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { aiConfig, conversationKey, generateAiReply, normalizeAiConfig, parseAiConfigRequest, shouldAnswer } from '../ai-brain.js';
+import { aiConfig, createAiSessions, conversationKey, generateAiReply, normalizeAiConfig, parseAiConfigRequest } from '../ai-brain.js';
 
-test('AI configuration and channel triggers avoid duplicate replies', () => {
+test('AI sessions wake, isolate users, exit, expire and reset context without model calls', () => {
+  let time = 1000;
+  const sessions = createAiSessions({ clock: () => time });
+  const config = aiConfig({ enabled: true, apiKey: 'fake', groupPrefix: 'AI', idleMinutes: 5 });
+  const event = { channel: 'qq', messageType: 'group', chatId: 'a', userId: 'b' };
+  const route = (text, extra = {}, result = { actions: [], errors: [] }) => sessions.route({ ...event, text, ...extra }, result, config);
+  assert.equal(route('普通消息'), null);
+  assert.equal(route('AIsomething'), null);
+  assert.match(route('AI').reply, /已唤醒/);
+  const first = route('你好');
+  assert.equal(first.prompt, '你好');
+  assert.equal(route('你好', { userId: 'other' }), null);
+  assert.equal(route('你好', { chatId: 'other' }), null);
+  assert.equal(route('你好', { messageType: 'private' }), null);
+  assert.equal(route('AI 图片', {}, { actions: [{ type: 'reply' }], errors: [] }), null);
+  assert.equal(route('商品链接', {}, { actions: [], errors: [{ plugin: 'Affiliate conversion' }] }), null);
+  assert.match(route('', { images: [{ url: 'https://example.com/a.png' }] }).prompt, /图片/);
+  time += 299999;
+  assert.equal(route('继续').conversation, first.conversation);
+  time += 300000;
+  assert.equal(route('继续'), null);
+  assert.equal(sessions.current(first.key, first.id), false);
+  const second = route('AI 新问题');
+  assert.notEqual(second.conversation, first.conversation);
+  assert.match(route('退出AI').reply, /已退出/);
+  assert.equal(sessions.current(second.key, second.id), false);
+  assert.equal(route('继续'), null);
+  assert.match(route('唤醒AI').reply, /已唤醒/);
+  assert.match(route('AI 结束对话').reply, /已退出/);
+  const custom = { ...config, exitCommand: '休息' };
+  assert.match(sessions.route({ ...event, text: '休息' }, { actions: [], errors: [] }, custom).reply, /已退出/);
+  assert.equal(route('AI 私聊', { messageType: 'private' }).prompt, '私聊');
+  assert.equal(route('后续', { messageType: 'private' }).prompt, '后续');
+  assert.equal(route('群内提问', { channel: 'qqbot' }).prompt, '群内提问');
+  sessions.clear();
+  assert.equal(route('后续', { messageType: 'private' }), null);
+  assert.equal(sessions.route({ ...event, text: 'AI' }, { actions: [], errors: [] }, { ...config, enabled: false }), null);
+  assert.equal(sessions.route({ ...event, text: 'AI' }, { actions: [], errors: [] }, { ...config, channels: [] }), null);
+});
+
+test('AI session settings validate boundaries and preserve saved values', () => {
+  const config = aiConfig({ provider: 'openai', model: 'gpt-4.1-mini' });
+  assert.equal(normalizeAiConfig(config).idleMinutes, 5);
+  for (const idleMinutes of [0, 121, 1.5, 'bad']) assert.throws(() => normalizeAiConfig({ ...config, idleMinutes }), /空闲超时/);
+  for (const exitCommand of ['', 'AI', '唤醒AI', 'x'.repeat(31)]) assert.throws(() => normalizeAiConfig({ ...config, exitCommand }), /退出命令/);
+  const { idleMinutes, exitCommand, ...legacy } = config;
+  const saved = normalizeAiConfig(legacy, { idleMinutes: 12, exitCommand: '睡觉' });
+  assert.equal(saved.idleMinutes, 12);
+  assert.equal(saved.exitCommand, '睡觉');
+});
+
+test('AI configuration validates credentials and conversation identity', () => {
   const config = normalizeAiConfig({ enabled: true, provider: 'openai', model: 'gpt-4.1-mini', apiKey: 'test-key', systemPrompt: '简洁回答', channels: ['qq', 'qqbot'], groupPrefix: 'AI' });
   const event = { channel: 'qq', messageType: 'group', chatId: '123', userId: '456', text: 'AI 今天天气' };
-  assert.equal(shouldAnswer(event, { actions: [], errors: [] }, config), '今天天气');
-  assert.equal(shouldAnswer({ ...event, text: '今天天气' }, { actions: [], errors: [] }, config), null);
-  assert.equal(shouldAnswer({ ...event, text: 'AIsomething' }, { actions: [], errors: [] }, config), null);
-  assert.equal(shouldAnswer(event, { actions: [{ type: 'reply' }], errors: [] }, config), null);
-  assert.equal(shouldAnswer(event, { actions: [], errors: [{ plugin: 'Affiliate conversion' }] }, config), null);
-  assert.equal(shouldAnswer({ ...event, channel: 'qqbot' }, { actions: [], errors: [] }, config), 'AI 今天天气');
-  assert.equal(shouldAnswer({ ...event, messageType: 'private', text: '开启AI回复' }, { actions: [], errors: [] }, { ...config, enabled: false }), '开启AI回复');
-  assert.equal(shouldAnswer({ ...event, messageType: 'private', text: '你好' }, { actions: [], errors: [] }, { ...config, enabled: false }), null);
-  assert.equal(shouldAnswer({ ...event, messageType: 'private', text: '', images: [{ url: 'https://cdn.example.com/a.jpg' }] }, { actions: [], errors: [] }, config), '请识别这张图片');
-  assert.equal(shouldAnswer({ ...event, text: '', images: [{ url: 'https://cdn.example.com/a.jpg' }] }, { actions: [], errors: [] }, config), null);
   assert.notEqual(conversationKey(event), conversationKey({ ...event, userId: 'other' }));
   assert.equal(aiConfig().enabled, false);
   assert.throws(() => normalizeAiConfig({ ...config, model: '../bad' }), /Invalid AI/);

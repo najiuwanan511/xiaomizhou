@@ -10,7 +10,7 @@ import { oneBotEvent, qqDestination, oneBotCall, sendQq } from './qq-bridge.js';
 import { createQqBotBridge, qqBotDestination } from './qqbot-bridge.js';
 import { createWecomBridge, wecomCallback, wecomDestination, wecomEvent } from './wecom-bridge.js';
 import { applyRebates, convertAffiliate, rebateConfigured, defaultRebateTemplate, formatRebate, imageUrl, normalizeShareText, productUrls, validateRebateTemplate } from './rebate-automation.js';
-import { aiConfig, conversationKey, generateAiReply, normalizeAiConfig, parseAiConfigRequest, shouldAnswer } from './ai-brain.js';
+import { aiConfig, createAiSessions, generateAiReply, normalizeAiConfig, parseAiConfigRequest } from './ai-brain.js';
 import { checkUpdate, installUpdate } from './update-manager.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -175,10 +175,19 @@ function publicAiConfig() {
   const config = getAiConfig();
   return { ...config, apiKey: config.apiKey ? '********' : '', historyCount: db.prepare('SELECT count(*) AS count FROM ai_turns').get().count };
 }
+const aiSessions = createAiSessions();
 async function processIncoming(event) {
   const result = await applyRebates(event, processEvent(event), rebateAutomation(), convert, platformFor, log);
   const config = getAiConfig();
-  const prompt = shouldAnswer(event, result, config);
+  const decision = aiSessions.route(event, result, config);
+  if (decision?.reply) {
+    if (!result.actions.some(action => action.type === 'blocked')) {
+      result.actions = result.actions.filter(action => action.type !== 'reply');
+      result.actions.push({ type: 'reply', text: decision.reply, plugin: 'AI' });
+    }
+    return result;
+  }
+  const prompt = decision?.prompt;
   if (!prompt) return result;
   const proposal = parseAiConfigRequest(prompt);
   if (proposal) {
@@ -197,9 +206,11 @@ async function processIncoming(event) {
   }
   try {
     const key = event.deliveryKey || `test:${crypto.randomUUID()}`;
-    const conversation = conversationKey(event);
+    const conversation = decision.conversation;
     const answer = aiTurn.get(key)?.assistant_text || await generateAiReply(config, aiHistory.all(conversation).reverse(), prompt, fetch, new Date(), event.images || []);
+    if (!aiSessions.current(decision.key, decision.id)) return result;
     const action = { type: 'reply', text: answer, plugin: 'AI' };
+    Object.defineProperty(action, 'aiSession', { value: { key: decision.key, id: decision.id } });
     Object.defineProperty(action, 'aiTurn', { value: { key, conversation, prompt, answer } });
     result.actions.push(action);
   } catch (error) {
@@ -213,6 +224,7 @@ async function deliverActions(event, result) {
   const warnings = [];
   let delivered = 0;
   for (const [index, action] of result.actions.entries()) {
+    if (action.aiSession && !aiSessions.current(action.aiSession.key, action.aiSession.id)) continue;
     const qqTarget = (event.channel === 'qq' && action.type === 'reply') || (action.type === 'forward' && action.channel === 'qq') ? qqDestination(action, event) : null;
     const botTarget = (event.channel === 'qqbot' && action.type === 'reply') || (action.type === 'forward' && action.channel === 'qqbot') ? qqBotDestination(action, event) : null;
     const wecomTarget = (event.channel === 'wecom' && action.type === 'reply') || (action.type === 'forward' && action.channel === 'wecom') ? wecomDestination(action, event) : null;
@@ -438,6 +450,7 @@ const server = http.createServer(async (req, res) => {
         const value = ['webSearch', 'enabled'].includes(proposal.setting_key) ? proposal.value === 'true' : proposal.value;
         const config = normalizeAiConfig({ ...current, [proposal.setting_key]: value }, current);
         putSetting.run('ai.config', JSON.stringify(config));
+        aiSessions.clear();
       }
       settleAiProposal.run(proposalMatch[2] === 'approve' ? 'approved' : 'rejected', proposal.id);
       db.prepare("DELETE FROM ai_config_proposals WHERE status!='pending' AND id NOT IN (SELECT id FROM ai_config_proposals ORDER BY id DESC LIMIT 200)").run();
@@ -447,6 +460,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'PUT' && pathname === '/api/ai') {
       const config = normalizeAiConfig(await body(req), getAiConfig());
       putSetting.run('ai.config', JSON.stringify(config));
+      aiSessions.clear();
       log('info', 'ai', `${config.provider} ${config.enabled ? 'enabled' : 'disabled'}`);
       return json(res, 200, publicAiConfig());
     }
@@ -460,6 +474,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'DELETE' && pathname === '/api/ai/history') {
       db.prepare('DELETE FROM ai_turns').run();
+      aiSessions.clear();
       log('info', 'ai', 'Conversation history cleared');
       return json(res, 200, { ok: true });
     }

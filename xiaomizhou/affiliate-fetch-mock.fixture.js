@@ -2,6 +2,11 @@ import assert from 'node:assert/strict';
 
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async (input, options) => {
+  if (String(input) === 'https://api.openai.com/v1/responses') {
+    assert.equal(options.headers.Authorization, 'Bearer test-key');
+    const request = JSON.parse(options.body);
+    return new Response(JSON.stringify({ output: [{ content: [{ type: 'output_text', text: `模拟AI:${request.input.at(-1).content}` }] }] }), { headers: { 'Content-Type': 'application/json' } });
+  }
   if (String(input) === 'https://api.zhetaoke.com:10001/api/open_gaoyongzhuanlian_tkl.ashx') {
     assert.ok(['https://e.tb.cn/h.test?tk=abc%2Bdef&x=1', 'https://m.tb.cn/h.test', 'https://detail.tmall.com/item.htm?id=123'].includes(options.body.get('tkl')));
     assert.equal(options.body.get('sid'), 'tb-sid');

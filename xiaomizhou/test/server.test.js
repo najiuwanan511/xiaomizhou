@@ -103,6 +103,23 @@ test('setup, plugin lifecycle, webhook, and official rebate configuration', asyn
     const wakeProposal = (await request('/api/ai/proposals')).result.proposals[0];
     assert.equal((await request(`/api/ai/proposals/${wakeProposal.id}/reject`, 'POST')).status, 200);
     assert.equal((await request('/api/ai')).result.enabled, false);
+    const sessionConfig = { enabled: true, provider: 'openai', model: 'gpt-4.1-mini', apiKey: '********', channels: ['qq'], groupPrefix: 'AI', idleMinutes: 2, exitCommand: '休息' };
+    assert.equal((await request('/api/ai', 'PUT', { ...sessionConfig, idleMinutes: 0 })).status, 400);
+    assert.equal((await request('/api/ai', 'PUT', sessionConfig)).status, 200);
+    assert.equal((await request('/api/ai')).result.idleMinutes, 2);
+    assert.equal((await request('/api/ai')).result.exitCommand, '休息');
+    const chat = text => request('/api/events', 'POST', { channel: 'qq', chatId: 'session-chat', userId: 'session-user', text }, { 'X-Webhook-Token': token });
+    assert.equal((await chat('你好')).result.actions.length, 0);
+    assert.match((await chat('AI')).result.actions[0].text, /已唤醒.*2 分钟/);
+    assert.equal((await chat('你好')).result.actions[0].text, '模拟AI:你好');
+    assert.match((await chat('休息')).result.actions[0].text, /已退出/);
+    assert.equal((await chat('继续')).result.actions.length, 0);
+    assert.equal((await chat('AI 新问题')).result.actions[0].text, '模拟AI:新问题');
+    await request('/api/ai/history', 'DELETE');
+    assert.equal((await chat('继续')).result.actions.length, 0);
+    await chat('AI');
+    assert.equal((await request('/api/ai', 'PUT', { ...sessionConfig, enabled: false })).status, 200);
+    assert.equal((await chat('继续')).result.actions.length, 0);
     assert.equal((await request('/api/qqbot', 'PUT', { enabled: true, appId: 'bad', appSecret: 'secret' })).status, 400);
     assert.equal((await request('/api/qqbot', 'PUT', { enabled: false, appId: '123', appSecret: 'secret' })).status, 200);
     assert.equal((await request('/api/qqbot')).result.appSecret, 'secret');
@@ -405,7 +422,7 @@ test('QQ messages use AI memory and plugin replies take precedence', async () =>
     const token = (await request('/api/settings')).result.webhookToken;
     await request('/api/qq', 'PUT', { enabled: true, endpoint: `http://127.0.0.1:${apiPort}`, accessToken: '' });
     await request('/api/ai', 'PUT', { enabled: true, provider: 'openai', model: 'gpt-4.1-mini', apiKey: 'test-key', systemPrompt: 'Test', channels: ['qq'], groupPrefix: 'AI' });
-    const event = id => ({ post_type: 'message', message_type: 'private', user_id: 123, self_id: 999, message_id: id, raw_message: `message-${id}` });
+    const event = id => ({ post_type: 'message', message_type: 'private', user_id: 123, self_id: 999, message_id: id, raw_message: `${id === 1 ? 'AI ' : ''}message-${id}` });
     assert.equal((await request('/api/qq/events', 'POST', event(1), token)).result.delivered, 1);
     assert.equal(sent.at(-1).message, 'AI-1');
     assert.equal((await request('/api/qq/events', 'POST', event(2), token)).result.delivered, 1);
@@ -420,6 +437,11 @@ test('QQ messages use AI memory and plugin replies take precedence', async () =>
     assert.equal(outcome.result.actions.length, 1);
     assert.equal(sent.at(-1).message, 'Plugin');
     assert.equal((await request('/api/ai')).result.historyCount, 2);
+    assert.equal((await request('/api/qq/events', 'POST', { ...event(4), raw_message: '退出AI' }, token)).result.delivered, 1);
+    assert.match(sent.at(-1).message, /已退出/);
+    assert.equal((await request('/api/qq/events', 'POST', event(5), token)).result.delivered, 0);
+    assert.equal((await request('/api/qq/events', 'POST', { ...event(6), raw_message: 'AI 新对话' }, token)).result.delivered, 1);
+    assert.equal(sent.at(-1).message, 'AI-1', 'new session must not include old history');
     assert.equal((await request('/api/ai/history', 'DELETE')).status, 200);
     assert.equal((await request('/api/ai')).result.historyCount, 0);
   } finally {

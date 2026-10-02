@@ -1,5 +1,6 @@
 import dns from 'node:dns/promises';
 import net from 'node:net';
+import { randomUUID } from 'node:crypto';
 
 export const aiChannels = ['qq', 'qqbot', 'wecom'];
 const defaults = { enabled: false, provider: 'openai', model: 'gpt-4.1-mini', apiKey: '', systemPrompt: '你是 xiaomizhou 的助手。用中文简洁回答。明确的 AI 配置命令可提交管理员审核，不能自行修改配置。你不能执行提醒或修复接口；没有实际执行时，不要声称已经完成。不要编造返利链接。', channels: ['qq', 'qqbot', 'wecom'], groupPrefix: 'AI ', webSearch: false, timeZone: 'Asia/Shanghai' };
@@ -12,30 +13,63 @@ export function normalizeAiConfig(input, previous = {}) {
   const channels = Array.isArray(input.channels) ? [...new Set(input.channels.filter(value => aiChannels.includes(value)))] : [];
   const groupPrefix = String(input.groupPrefix ?? '').trim();
   const timeZone = String(input.timeZone || 'Asia/Shanghai').trim();
+  const idleMinutes = Number(input.idleMinutes ?? previous.idleMinutes ?? 5);
+  const exitCommand = String(input.exitCommand ?? previous.exitCommand ?? '退出AI').trim();
+  if (!Number.isInteger(idleMinutes) || idleMinutes < 1 || idleMinutes > 120) throw Object.assign(new Error('空闲超时须为 1–120 分钟的整数'), { status: 400 });
+  if (!exitCommand || exitCommand.length > 30 || /[\r\n]/u.test(exitCommand) || [groupPrefix, '唤醒AI'].includes(exitCommand)) throw Object.assign(new Error('退出命令须为 1–30 字，且不能与唤醒词相同'), { status: 400 });
   if (!provider || !/^[a-zA-Z0-9._-]{1,100}$/.test(model) || systemPrompt.length > 4000 || groupPrefix.length > 30) throw Object.assign(new Error('Invalid AI provider, model or prompt'), { status: 400 });
   try { if (timeZone.length > 100) throw new RangeError(); new Intl.DateTimeFormat('zh-CN', { timeZone }); }
   catch { throw Object.assign(new Error('Invalid IANA time zone'), { status: 400 }); }
   if (input.enabled && (!apiKey || !channels.length)) throw Object.assign(new Error('API key and at least one channel required'), { status: 400 });
-  if (input.enabled && channels.includes('qq') && !groupPrefix) throw Object.assign(new Error('QQ group prefix required'), { status: 400 });
-  return { enabled: input.enabled === true, provider, model, apiKey, systemPrompt, channels, groupPrefix, webSearch: input.webSearch === true, timeZone };
+  if (input.enabled && !groupPrefix) throw Object.assign(new Error('AI 唤醒前缀不能为空'), { status: 400 });
+  return { enabled: input.enabled === true, provider, model, apiKey, systemPrompt, channels, groupPrefix, webSearch: input.webSearch === true, timeZone, idleMinutes, exitCommand };
 }
 
 export function aiConfig(stored = {}) {
-  return { ...defaults, ...stored, channels: Array.isArray(stored.channels) ? stored.channels : defaults.channels };
+  return { idleMinutes: 5, exitCommand: '退出AI', ...defaults, ...stored, groupPrefix: String(stored.groupPrefix ?? defaults.groupPrefix).trim(), channels: Array.isArray(stored.channels) ? stored.channels : defaults.channels };
 }
 
-export function shouldAnswer(event, result, config) {
-  if (!config.apiKey || !config.channels.includes(event.channel) || (!String(event.text || '').trim() && !event.images?.length)) return null;
-  if (result.actions.some(action => action.type === 'reply' || action.type === 'blocked')) return null;
-  if (result.errors.some(error => error.plugin === 'Affiliate conversion')) return null;
-  let text = String(event.text || '').trim();
-  if (event.channel === 'qq' && event.messageType === 'group') {
-    if (!text.startsWith(config.groupPrefix)) return null;
-    const rest = text.slice(config.groupPrefix.length);
-    if (rest && !/^[\s:：，,]/u.test(rest)) return null;
-    text = rest.replace(/^[\s:：，,]+/u, '').trim();
-  }
-  return (text || event.images?.length) && (config.enabled || parseAiConfigRequest(text)) ? text || '请识别这张图片' : null;
+// In-memory sessions intentionally end on restart. A fresh history key prevents
+// expired or concurrently finishing requests from leaking into a new session.
+export function createAiSessions({ clock = Date.now } = {}) {
+  const sessions = new Map();
+  const current = (key, id) => sessions.get(key)?.id === id && sessions.get(key).expires > clock();
+  return {
+    clear() { sessions.clear(); },
+    current,
+    route(event, result, config) {
+      const time = clock();
+      for (const [key, value] of sessions) if (value.expires <= time) sessions.delete(key);
+      if (!config.apiKey || !config.channels.includes(event.channel)) return null;
+      const key = conversationKey(event);
+      let text = String(event.text || '').trim();
+      const prefix = String(config.groupPrefix || 'AI').trim();
+      const prefixed = text.startsWith(prefix) && (!text.slice(prefix.length) || /^[\s:：，,]/u.test(text.slice(prefix.length)));
+      if (prefixed) text = text.slice(prefix.length).replace(/^[\s:：，,]+/u, '').trim();
+      const exit = config.exitCommand || '退出AI';
+      if ([exit, '退出AI', '退出 AI', '结束对话'].includes(text)) {
+        sessions.delete(key);
+        return { reply: `已退出 AI 对话。发送“${prefix}”可重新唤醒。` };
+      }
+      if (result.actions.some(action => ['reply', 'blocked'].includes(action.type)) || result.errors.some(error => error.plugin === 'Affiliate conversion')) return null;
+      // Keep explicit configuration proposals available even while AI is disabled.
+      if (parseAiConfigRequest(text) && (event.channel !== 'qq' || event.messageType !== 'group' || prefixed || sessions.has(key))) return { prompt: text };
+      if (!config.enabled) { sessions.delete(key); return null; }
+      const wake = prefixed || text === '唤醒AI' || (event.channel === 'qqbot' && event.messageType === 'group');
+      if (text === '唤醒AI') text = '';
+      let session = sessions.get(key);
+      if (!session && !wake) return null;
+      if (!text && !event.images?.length && !wake) return null;
+      if (!session) {
+        if (sessions.size >= 10000) sessions.delete(sessions.keys().next().value);
+        session = { id: randomUUID(), expires: 0 };
+        sessions.set(key, session);
+      }
+      session.expires = time + (config.idleMinutes || 5) * 60000;
+      if (!text && !event.images?.length) return { reply: `AI 已唤醒，可以连续提问。发送“${exit}”退出；空闲 ${config.idleMinutes || 5} 分钟自动结束。` };
+      return { prompt: text || '请识别这张图片', key, id: session.id, conversation: `${key}:${session.id}` };
+    }
+  };
 }
 
 export function conversationKey(event) {
