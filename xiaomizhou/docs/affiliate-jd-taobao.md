@@ -52,7 +52,9 @@ v0.3.7 起，「链接 / 分享文案测试」可直接粘贴手机 APP 复制�
 | 折淘客 AppKey | [淘宝板块对接秘钥](https://www.zhetaoke.com/user/open/open_appkey.aspx) | 登录后复制 AppKey；不填写淘宝应用 AppSecret或折京客密钥 |
 | SID | [授权管理](https://www.zhetaoke.com/user/shouquan.html) | 完成淘宝账号授权，复制对应授权记录的 SID |
 | PID | [淘宝联盟](https://pub.alimama.com/)的推广位管理；[折淘客 PID 管理](https://www.zhetaoke.com/user/extend/extend_mypid.aspx) | 复制完整 `mm_数字_数字_数字`；须属于 SID 对应账号，渠道场景使用渠道专属推广位 |
-| RID | [渠道备案获取教程](https://www.zhetaoke.com/help_detail_3_20.html)、[渠道备案接口说明](https://www.zhetaoke.com/user/open/open_sc_publisher_save.aspx)、[渠道信息查询](https://www.zhetaoke.com/user/open/open_sc_publisher_get.aspx) | 用户通过渠道邀请备案后取得的 `relation_id`；代理授权和手淘分享需要填写 |
+| RID | [渠道备案获取教程](https://www.zhetaoke.com/help_detail_3_20.html)、[渠道备案接口说明](https://www.zhetaoke.com/user/open/open_sc_publisher_save.aspx)、[渠道查询 API 文档](https://www.zhetaoke.com/user/open/open_sc_publisher_get.aspx) | 用户通过渠道邀请备案后取得的 `relation_id`；代理授权和手淘分享需要填写 |
+
+RID 没有所有账号通用的领取链接。请先打开[淘宝联盟后台](https://pub.alimama.com/)，登录自己的账号，在渠道管理中获取自己的邀请备案链接，完成对应用户备案后取得 relation_id。没有渠道管理入口时，先向淘宝联盟确认渠道权限；不要使用教程中的示例邀请码。
 
 这些入口需要自行登录，页面不会自动把小米粥中的密钥带到链接里。RID 教程和查询入口是说明页，不是打开就能产生 RID；须先满足渠道权限并完成用户备案。目前小米粥只有一个固定 RID 配置，所有转链共用它，尚未实现每个 QQ 用户自动备案和订单返利记账。
 
