@@ -148,6 +148,7 @@ test('affiliate automation replaces forward links and blocks forwarding on failu
 test('rebate template omits missing fields and keeps one link per product', () => {
   const template = validateRebateTemplate('商品：{{name}}\n链接：{{url}}\n口令：{{code}}\n预计返利：{{estimate}}');
   assert.equal(formatRebate({ mode: 'live', resultUrl: 'https://promo.example/a', name: 'A\nB', estimate: 2.3 }, template), '商品：A B\n链接：https://promo.example/a\n预计返利：2.30 元');
+  assert.equal(formatRebate({ mode: 'live', resultUrl: 'https://promo.example/a' }, '{{name}} {{url}}'), '返利链接：https://promo.example/a');
   assert.equal(formatRebate({ mode: 'test', resultUrl: null }, template), '');
 });
 

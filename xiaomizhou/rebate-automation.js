@@ -30,9 +30,10 @@ export function formatRebate(conversion, template = defaultRebateTemplate) {
     estimate: typeof conversion.estimate === 'number' && Number.isFinite(conversion.estimate) && conversion.estimate >= 0
       ? `${conversion.estimate.toFixed(2)} 元` : cleanField(conversion.estimate, 80)
   };
-  return template.split(/\r?\n/).filter(line =>
+  const rendered = template.split(/\r?\n/).filter(line =>
     ![...line.matchAll(/{{\s*(name|code|estimate)\s*}}/g)].some(match => !fields[match[1]])
   ).map(line => line.replace(/{{\s*(name|url|code|estimate)\s*}}/g, (_match, field) => fields[field])).join('\n').trim();
+  return rendered.includes(fields.url) ? rendered : [rendered, `返利链接：${fields.url}`].filter(Boolean).join('\n');
 }
 
 function timestamp(date) {
