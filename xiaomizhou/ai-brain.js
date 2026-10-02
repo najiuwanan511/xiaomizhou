@@ -1,3 +1,6 @@
+import dns from 'node:dns/promises';
+import net from 'node:net';
+
 export const aiChannels = ['qq', 'qqbot', 'wecom'];
 const defaults = { enabled: false, provider: 'openai', model: 'gpt-4.1-mini', apiKey: '', systemPrompt: '你是 xiaomizhou 的助手。用中文简洁回答。明确的 AI 配置命令可提交管理员审核，不能自行修改配置。你不能执行提醒或修复接口；没有实际执行时，不要声称已经完成。不要编造返利链接。', channels: ['qq', 'qqbot', 'wecom'], groupPrefix: 'AI ', webSearch: false, timeZone: 'Asia/Shanghai' };
 
@@ -22,17 +25,17 @@ export function aiConfig(stored = {}) {
 }
 
 export function shouldAnswer(event, result, config) {
-  if (!config.apiKey || !config.channels.includes(event.channel) || !String(event.text || '').trim()) return null;
+  if (!config.apiKey || !config.channels.includes(event.channel) || (!String(event.text || '').trim() && !event.images?.length)) return null;
   if (result.actions.some(action => action.type === 'reply' || action.type === 'blocked')) return null;
   if (result.errors.some(error => error.plugin === 'Affiliate conversion')) return null;
-  let text = event.text.trim();
+  let text = String(event.text || '').trim();
   if (event.channel === 'qq' && event.messageType === 'group') {
     if (!text.startsWith(config.groupPrefix)) return null;
     const rest = text.slice(config.groupPrefix.length);
     if (rest && !/^[\s:：，,]/u.test(rest)) return null;
     text = rest.replace(/^[\s:：，,]+/u, '').trim();
   }
-  return text && (config.enabled || parseAiConfigRequest(text)) ? text : null;
+  return (text || event.images?.length) && (config.enabled || parseAiConfigRequest(text)) ? text || '请识别这张图片' : null;
 }
 
 export function conversationKey(event) {
@@ -70,16 +73,83 @@ function responseText(value, maxBytes = 1800) {
   return output;
 }
 
-export async function generateAiReply(config, history, text, fetchImpl = fetch, now = new Date()) {
+function imageAddress(value) {
+  try {
+    if (typeof value !== 'string' || value.length > 2000) return null;
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    if (url.protocol !== 'https:' || !host || url.username || url.password || url.port || host === 'localhost' || host.endsWith('.localhost') || net.isIP(host)) return null;
+    return url;
+  } catch { return null; }
+}
+
+function publicAddress(address) {
+  if (net.isIP(address) === 4) {
+    const [a, b] = address.split('.').map(Number);
+    return !(a === 0 || a === 10 || a === 127 || a >= 224 || a === 169 && b === 254 || a === 172 && b >= 16 && b <= 31 || a === 192 && b === 168 || a === 100 && b >= 64 && b <= 127 || a === 192 && b === 0);
+  }
+  if (net.isIP(address) === 6) {
+    const lower = address.toLowerCase();
+    return !(lower === '::' || lower === '::1' || lower.startsWith('fc') || lower.startsWith('fd') || lower.startsWith('fe8') || lower.startsWith('fe9') || lower.startsWith('fea') || lower.startsWith('feb') || lower.startsWith('::ffff:'));
+  }
+  return false;
+}
+
+async function imageParts(images, fetchImpl, lookup) {
+  const parts = [];
+  let total = 0;
+  for (const image of images.slice(0, 3)) {
+    const url = imageAddress(image?.url);
+    if (!url) throw Object.assign(new Error('Image needs a public HTTPS URL'), { status: 400 });
+    const addresses = await lookup(url.hostname, { all: true });
+    if (!addresses.length || addresses.some(item => !publicAddress(item.address))) throw Object.assign(new Error('Image host must resolve to a public address'), { status: 400 });
+    let response;
+    try { response = await fetchImpl(url.href, { signal: AbortSignal.timeout(15000), redirect: 'error' }); }
+    catch { throw Object.assign(new Error('Image download failed'), { status: 502 }); }
+    if (!response.ok) throw Object.assign(new Error(`Image download HTTP ${response.status}`), { status: 502 });
+    const mimeType = String(response.headers?.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(mimeType)) throw Object.assign(new Error('Unsupported image format'), { status: 400 });
+    const size = Number(response.headers?.get('content-length') || 0);
+    if (size > 5 * 1024 * 1024 || total + size > 10 * 1024 * 1024) throw Object.assign(new Error('Image exceeds size limit'), { status: 400 });
+    const chunks = [];
+    let imageSize = 0;
+    if (response.body?.getReader) {
+      const reader = response.body.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          total += value.byteLength;
+          imageSize += value.byteLength;
+          if (total > 10 * 1024 * 1024 || imageSize > 5 * 1024 * 1024) throw Object.assign(new Error('Image exceeds size limit'), { status: 400 });
+          chunks.push(Buffer.from(value));
+        }
+      } finally { reader.releaseLock(); }
+    } else {
+      const bytes = Buffer.from(await response.arrayBuffer());
+      total += bytes.length;
+      if (bytes.length > 5 * 1024 * 1024 || total > 10 * 1024 * 1024) throw Object.assign(new Error('Image exceeds size limit'), { status: 400 });
+      chunks.push(bytes);
+    }
+    parts.push({ mimeType, data: Buffer.concat(chunks).toString('base64') });
+  }
+  return parts;
+}
+
+export async function generateAiReply(config, history, text, fetchImpl = fetch, now = new Date(), images = [], lookup = dns.lookup) {
   const messages = [...history.flatMap(turn => [{ role: 'user', content: turn.user_text }, { role: 'assistant', content: turn.assistant_text }]), { role: 'user', content: text }];
   const openai = config.provider === 'openai';
+  const pictures = await imageParts(Array.isArray(images) ? images : [], fetchImpl, lookup);
+  if (pictures.length) messages.at(-1).content = openai
+    ? [{ type: 'input_text', text }, ...pictures.map(picture => ({ type: 'input_image', image_url: `data:${picture.mimeType};base64,${picture.data}` }))]
+    : [{ text }, ...pictures.map(picture => ({ inlineData: picture }))];
   const url = openai ? 'https://api.openai.com/v1/responses' : `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.model)}:generateContent`;
   const timeZone = config.timeZone || 'Asia/Shanghai';
   const localTime = new Intl.DateTimeFormat('zh-CN', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'long', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(now);
   const instructions = `${config.systemPrompt}\n当前时间（${timeZone}）：${localTime}。涉及实时信息时，只有实际完成联网搜索才能说已查询。`;
   const payload = openai
     ? { model: config.model, instructions, input: messages, max_output_tokens: 512, store: false, ...(config.webSearch ? { tools: [{ type: 'web_search' }] } : {}) }
-    : { systemInstruction: { parts: [{ text: instructions }] }, contents: messages.map(message => ({ role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: message.content }] })), generationConfig: { maxOutputTokens: 512 }, ...(config.webSearch ? { tools: [{ google_search: {} }] } : {}) };
+    : { systemInstruction: { parts: [{ text: instructions }] }, contents: messages.map(message => ({ role: message.role === 'assistant' ? 'model' : 'user', parts: Array.isArray(message.content) ? message.content : [{ text: message.content }] })), generationConfig: { maxOutputTokens: 512 }, ...(config.webSearch ? { tools: [{ google_search: {} }] } : {}) };
   const providerName = openai ? 'OpenAI' : 'Gemini';
   let response;
   try {

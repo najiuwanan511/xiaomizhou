@@ -7,7 +7,8 @@ import net from 'node:net';
 import http from 'node:http';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { applyRebates, formatRebate, productUrls, validateRebateTemplate } from '../rebate-automation.js';
+import { applyRebates, formatRebate, imageUrl, productUrls, validateRebateTemplate } from '../rebate-automation.js';
+import { oneBotEvent, sendQq } from '../qq-bridge.js';
 
 async function freePort() {
   const socket = net.createServer();
@@ -130,6 +131,8 @@ test('setup, plugin lifecycle, webhook, and rebate test mode', async () => {
     assert.equal((await request('/api/rebates/automation', 'PUT', { enabled: true, reply: true, template: '商品：{{name}}' })).status, 400);
     assert.equal((await request('/api/rebates/automation', 'PUT', { enabled: true, reply: true, template: '{{url}} {{unknown}}' })).status, 400);
     assert.equal((await request('/api/rebates/automation', 'PUT', { enabled: true, reply: true, template: '链接：{{url}}' })).result.template, '链接：{{url}}');
+    assert.equal((await request('/api/rebates/automation', 'PUT', { enabled: true, reply: true, image: true })).result.image, true);
+    assert.equal((await request('/api/rebates/automation')).result.image, true);
     const automatic = await request('/api/events', 'POST', { channel: 'qq', chatId: '123', text: '看看 https://item.jd.com/123.html。' }, { 'X-Webhook-Token': token });
     assert.equal(automatic.result.conversions[0].mode, 'test');
     assert.equal(automatic.result.actions.length, 0);
@@ -155,6 +158,13 @@ test('affiliate automation replaces forward links and blocks forwarding on failu
   assert.equal(success.actions[0].text, '商品 返利链接：https://promo.example/abc');
   assert.equal(success.actions[1].type, 'reply');
   assert.equal(success.actions[1].text, '返利链接：https://promo.example/abc');
+  const withPicture = await applyRebates(event, { actions: actions(), errors: [] }, { enabled: true, reply: true, image: true }, async () => ({ platform: 'jd', mode: 'live', resultUrl: 'https://promo.example/abc', imageUrl: 'https://cdn.example.com/product.jpg' }), platformFor, () => {});
+  assert.deepEqual(withPicture.actions[0].images, [{ url: 'https://cdn.example.com/product.jpg' }]);
+  assert.deepEqual(withPicture.actions[1].images, withPicture.actions[0].images);
+  const withoutPicture = await applyRebates(event, { actions: actions(), errors: [] }, { enabled: true, reply: true, image: false }, async () => ({ platform: 'jd', mode: 'live', resultUrl: 'https://promo.example/abc', imageUrl: 'https://cdn.example.com/product.jpg' }), platformFor, () => {});
+  assert.equal(withoutPicture.actions[0].images, undefined);
+  assert.equal(imageUrl('http://cdn.example.com/a.jpg'), null);
+  assert.equal(imageUrl('https://localhost/a.jpg'), null);
   const detailed = await applyRebates(event, { actions: actions(), errors: [] }, { enabled: true, reply: true, template: '商品：{{name}}\n链接：{{url}}\n口令：{{code}}\n预计返利：{{estimate}}' }, async () => ({ platform: 'jd', mode: 'live', resultUrl: 'https://promo.example/abc', name: '测试商品', code: '￥abc￥', estimate: '2.30 元' }), platformFor, () => {});
   assert.equal(detailed.actions[1].text, '商品：测试商品\n链接：https://promo.example/abc\n口令：￥abc￥\n预计返利：2.30 元');
   assert.equal(detailed.actions[0].text, `商品 ${detailed.actions[1].text}`);
@@ -169,6 +179,25 @@ test('rebate template omits missing fields and keeps one link per product', () =
   assert.equal(formatRebate({ mode: 'live', resultUrl: 'https://promo.example/a', name: 'A\nB', estimate: 2.3 }, template), '商品：A B\n链接：https://promo.example/a\n预计返利：2.30 元');
   assert.equal(formatRebate({ mode: 'live', resultUrl: 'https://promo.example/a' }, '{{name}} {{url}}'), '返利链接：https://promo.example/a');
   assert.equal(formatRebate({ mode: 'test', resultUrl: null }, template), '');
+});
+
+test('OneBot accepts image-only messages and sends text with product pictures', async () => {
+  const event = oneBotEvent({ post_type: 'message', message_type: 'private', user_id: 123, self_id: 999, message_id: 7, message: [{ type: 'image', data: { url: 'https://cdn.example.com/a.jpg' } }] });
+  assert.deepEqual(event.images, [{ url: 'https://cdn.example.com/a.jpg', mimeType: 'image/jpeg' }]);
+  const port = await freePort();
+  let body;
+  const mock = http.createServer(async (req, res) => {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    body = JSON.parse(raw);
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ status: 'ok', retcode: 0, data: {} }));
+  });
+  await new Promise(resolve => mock.listen(port, '127.0.0.1', resolve));
+  try {
+    await sendQq({ endpoint: `http://127.0.0.1:${port}` }, { type: 'private', id: '123' }, '推广链接', event.images);
+    assert.deepEqual(body.message, [{ type: 'text', data: { text: '推广链接' } }, { type: 'image', data: { file: 'https://cdn.example.com/a.jpg' } }]);
+  } finally { await new Promise(resolve => mock.close(resolve)); }
 });
 
 test('QQ OneBot callback replies, forwards, deduplicates and retries failed sends', async () => {

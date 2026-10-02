@@ -52,6 +52,8 @@ test('QQ Bot accepts only supported text events and explicit targets', () => {
   assert.equal(qqBotEvent({ op: 0, t: 'C2C_MESSAGE_CREATE', d: { id: '1', author: { user_openid: 'user' }, content: ' ' } }), null);
   const event = qqBotEvent({ op: 0, t: 'C2C_MESSAGE_CREATE', d: { id: '1', author: { user_openid: 'user' }, content: 'ping' } });
   assert.equal(event.chatId, 'user');
+  const imageEvent = qqBotEvent({ op: 0, t: 'C2C_MESSAGE_CREATE', d: { id: '2', author: { user_openid: 'user' }, attachments: [{ url: 'https://cdn.example.com/a.jpg', content_type: 'image/jpeg' }] } });
+  assert.deepEqual(imageEvent.images, [{ url: 'https://cdn.example.com/a.jpg', mimeType: 'image/jpeg' }]);
   assert.deepEqual(qqBotDestination({ type: 'forward', channel: 'qqbot', target: 'private:other' }, event), { type: 'private', id: 'other' });
   assert.equal(qqBotDestination({ type: 'forward', channel: 'qqbot', target: 'bad' }, event), null);
 });

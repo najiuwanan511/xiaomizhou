@@ -9,7 +9,7 @@ import { runPlugin } from './plugin-runner.js';
 import { oneBotEvent, qqDestination, oneBotCall, sendQq } from './qq-bridge.js';
 import { createQqBotBridge, qqBotDestination } from './qqbot-bridge.js';
 import { createWecomBridge, wecomCallback, wecomDestination, wecomEvent } from './wecom-bridge.js';
-import { applyRebates, convertOfficial, defaultRebateTemplate, formatRebate, validateRebateTemplate } from './rebate-automation.js';
+import { applyRebates, convertOfficial, defaultRebateTemplate, formatRebate, imageUrl, validateRebateTemplate } from './rebate-automation.js';
 import { aiConfig, conversationKey, generateAiReply, normalizeAiConfig, parseAiConfigRequest, shouldAnswer } from './ai-brain.js';
 import { checkUpdate, installUpdate } from './update-manager.js';
 
@@ -198,7 +198,7 @@ async function processIncoming(event) {
   try {
     const key = event.deliveryKey || `test:${crypto.randomUUID()}`;
     const conversation = conversationKey(event);
-    const answer = aiTurn.get(key)?.assistant_text || await generateAiReply(config, aiHistory.all(conversation).reverse(), prompt);
+    const answer = aiTurn.get(key)?.assistant_text || await generateAiReply(config, aiHistory.all(conversation).reverse(), prompt, fetch, new Date(), event.images || []);
     const action = { type: 'reply', text: answer, plugin: 'AI' };
     Object.defineProperty(action, 'aiTurn', { value: { key, conversation, prompt, answer } });
     result.actions.push(action);
@@ -223,9 +223,13 @@ async function deliverActions(event, result) {
     }
     if (deliveredQq.get(event.deliveryKey, index)) continue;
     try {
-      if (qqTarget) await sendQq(qqConfig(), qqTarget, action.text);
+      if (qqTarget) await sendQq(qqConfig(), qqTarget, action.text, action.images || []);
       else if (botTarget) await qqBotBridge.send(botTarget, action.text, event.channel === 'qqbot' && botTarget.type === event.messageType && botTarget.id === event.chatId ? event.messageId : '', index + 1);
       else await wecomBridge.send(wecomTarget, action.text);
+      if (!qqTarget && action.images?.length) {
+        warnings.push(`Action ${index + 1}: image omitted; destination supports text only`);
+        log('warn', event.channel, `Message ${event.messageId}, action ${index + 1}: image omitted; destination supports text only`);
+      }
       markQqDelivered.run(event.deliveryKey, index, now());
       if (action.aiTurn) {
         saveAiTurn.run(action.aiTurn.key, action.aiTurn.conversation, action.aiTurn.prompt, action.aiTurn.answer, now());
@@ -259,8 +263,8 @@ function rebateConfig(platform) {
 function rebateAutomation() {
   try {
     const value = JSON.parse(getSetting('rebate.automation', '{}'));
-    return { enabled: !!value.enabled, reply: value.reply !== false, template: value.template || defaultRebateTemplate };
-  } catch { return { enabled: false, reply: true, template: defaultRebateTemplate }; }
+    return { enabled: !!value.enabled, reply: value.reply !== false, image: value.image === true, template: value.template || defaultRebateTemplate };
+  } catch { return { enabled: false, reply: true, image: false, template: defaultRebateTemplate }; }
 }
 async function convert(input) {
   const url = String(input.url || '').trim();
@@ -297,7 +301,7 @@ async function convert(input) {
   catch { throw new Error('Affiliate API returned no HTTPS URL'); }
   if (parsedResultUrl.protocol !== 'https:' || !parsedResultUrl.hostname || parsedResultUrl.username || parsedResultUrl.password) throw new Error('Affiliate API returned no HTTPS URL');
   const result = { platform, mode: 'live', provider: 'custom', sourceUrl: url, resultUrl: parsedResultUrl.href,
-    name: payload.name, code: payload.code, estimate: payload.estimate };
+    name: payload.name, code: payload.code, estimate: payload.estimate, imageUrl: imageUrl(payload.imageUrl || payload.image_url) };
   return { ...result, formattedText: formatRebate(result, rebateAutomation().template) };
 }
 const qqBotBridge = createQqBotBridge({
@@ -344,7 +348,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && pathname === '/api/events') {
       if (!validToken(req.headers['x-webhook-token'])) return fail(res, 401, 'Invalid webhook token');
       const input = await body(req);
-      const event = { channel: String(input.channel || ''), chatId: String(input.chatId || ''), userId: String(input.userId || ''), text: String(input.text || '').slice(0, 4000) };
+      const event = { channel: String(input.channel || ''), chatId: String(input.chatId || ''), userId: String(input.userId || ''), text: String(input.text || '').slice(0, 4000), images: Array.isArray(input.images) ? input.images.map(image => ({ url: imageUrl(image?.url) })).filter(image => image.url).slice(0, 3) : [] };
       log('info', 'event', `${event.channel}: ${event.chatId}`);
       return json(res, 200, await processIncoming(event));
     }
@@ -572,7 +576,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'PUT' && pathname === '/api/rebates/automation') {
       const input = await body(req);
       const template = validateRebateTemplate(input.template ?? rebateAutomation().template);
-      putSetting.run('rebate.automation', JSON.stringify({ enabled: input.enabled === true, reply: input.reply !== false, template }));
+      putSetting.run('rebate.automation', JSON.stringify({ enabled: input.enabled === true, reply: input.reply !== false, image: input.image === true, template }));
       log('info', 'rebate', `Automatic conversion ${input.enabled === true ? 'enabled' : 'disabled'}`);
       return json(res, 200, rebateAutomation());
     }

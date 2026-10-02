@@ -5,11 +5,14 @@ export function oneBotEvent(input) {
   const messageId = String(input.message_id ?? '');
   if (!/^\d+$/.test(userId) || !/^\d+$/.test(chatId) || !messageId || messageId.length > 120) return null;
   if (userId === String(input.self_id ?? '')) return null;
+  const images = Array.isArray(input.message)
+    ? input.message.filter(part => part?.type === 'image').map(part => ({ url: String(part.data?.url || ''), mimeType: String(part.data?.type || 'image/jpeg') })).filter(image => /^https:\/\/[^\s]{1,2000}$/i.test(image.url)).slice(0, 3)
+    : [];
   const text = Array.isArray(input.message)
     ? input.message.filter(part => part?.type === 'text').map(part => String(part.data?.text ?? '')).join('')
     : String(input.raw_message ?? input.message ?? '').replace(/\[CQ:[^\]]*\]/g, '');
-  if (!text.trim()) return null;
-  return { channel: 'qq', chatId, userId, text: text.slice(0, 4000), messageType: input.message_type, messageId, deliveryKey: `${input.self_id ?? ''}:${input.message_type}:${chatId}:${messageId}` };
+  if (!text.trim() && !images.length) return null;
+  return { channel: 'qq', chatId, userId, text: text.slice(0, 4000), images, messageType: input.message_type, messageId, deliveryKey: `${input.self_id ?? ''}:${input.message_type}:${chatId}:${messageId}` };
 }
 
 export function qqDestination(action, event) {
@@ -34,9 +37,12 @@ export async function oneBotCall(config, action, params) {
   return result.data;
 }
 
-export async function sendQq(config, destination, text) {
+export async function sendQq(config, destination, text, images = []) {
   if (!/^\d+$/.test(destination.id) || !Number.isSafeInteger(Number(destination.id))) throw new Error('Invalid QQ destination');
-  const params = { message: String(text).slice(0, 4000), auto_escape: true };
+  const safeImages = images.filter(image => /^https:\/\/[^\s]{1,2000}$/i.test(String(image?.url || ''))).slice(0, 3);
+  const params = safeImages.length
+    ? { message: [{ type: 'text', data: { text: String(text).slice(0, 4000) } }, ...safeImages.map(image => ({ type: 'image', data: { file: image.url } }))], auto_escape: false }
+    : { message: String(text).slice(0, 4000), auto_escape: true };
   params[destination.type === 'group' ? 'group_id' : 'user_id'] = Number(destination.id);
   return oneBotCall(config, destination.type === 'group' ? 'send_group_msg' : 'send_private_msg', params);
 }

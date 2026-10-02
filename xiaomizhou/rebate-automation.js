@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import net from 'node:net';
 
 
 const jdEndpoint = 'https://router.jd.com/api';
@@ -66,6 +67,15 @@ function httpsUrl(value) {
   catch { return null; }
 }
 
+export function imageUrl(value) {
+  try {
+    if (typeof value !== 'string' || value.length > 2000) return null;
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    return url.protocol === 'https:' && host && !url.username && !url.password && !url.port && host !== 'localhost' && !host.endsWith('.localhost') && !net.isIP(host) ? url.href : null;
+  } catch { return null; }
+}
+
 async function postForm(endpoint, fields, fetcher) {
   const response = await fetcher(endpoint, {
     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8' },
@@ -85,7 +95,8 @@ function jdResult(payload, method) {
   if ((wrapper.code != null && String(wrapper.code) !== '0') || String(result?.code) !== '200') throw new Error(`JD API ${result?.code || wrapper.code || 'error'}: ${result?.message || wrapper.message || 'conversion failed'}`);
   const url = httpsUrl(result?.data?.clickURL);
   if (!url) throw new Error('JD API returned no HTTPS promotion URL');
-  return { resultUrl: url };
+  const picture = imageUrl(result?.data?.imageUrl || result?.data?.imgUrl);
+  return { resultUrl: url, ...(picture ? { imageUrl: picture } : {}) };
 }
 
 function taobaoResult(payload) {
@@ -99,9 +110,11 @@ function taobaoResult(payload) {
   const couponUrl = httpsUrl(links?.coupon_short_url) || httpsUrl(links?.coupon_long_url);
   const cpsUrl = httpsUrl(links?.cps_short_url) || httpsUrl(links?.cps_long_url);
   if (!couponUrl && !cpsUrl) throw new Error('Taobao API returned no HTTPS promotion URL');
-  return couponUrl
+  const conversion = couponUrl
     ? { resultUrl: couponUrl, code: links?.coupon_short_tpwd || '' }
     : { resultUrl: cpsUrl, code: links?.cps_short_tpwd || '' };
+  const picture = imageUrl(item.imageUrl || item.imgUrl);
+  return picture ? { ...conversion, imageUrl: picture } : conversion;
 }
 
 export async function convertOfficial(platform, url, config, { fetcher = fetch, date = new Date() } = {}) {
@@ -148,10 +161,15 @@ export async function applyRebates(event, result, config, convert, platformFor, 
       conversions.push(conversion);
       if (conversion.mode !== 'live') continue;
       const message = formatRebate(conversion, config.template);
+      const picture = config.image && imageUrl(conversion.imageUrl);
+      const images = picture ? [{ url: picture }] : [];
       for (const action of result.actions) {
-        if (action.type === 'forward' && action.text.includes(url)) action.text = action.text.replaceAll(url, message);
+        if (action.type === 'forward' && action.text.includes(url)) {
+          action.text = action.text.replaceAll(url, message);
+          if (images.length) action.images = [...(action.images || []), ...images];
+        }
       }
-      if (config.reply) result.actions.push({ type: 'reply', text: message, plugin: 'Affiliate conversion' });
+      if (config.reply) result.actions.push({ type: 'reply', text: message, ...(images.length ? { images } : {}), plugin: 'Affiliate conversion' });
       log('info', 'rebate', `${conversion.platform} automatic conversion`);
     } catch (error) {
       for (const action of result.actions) {

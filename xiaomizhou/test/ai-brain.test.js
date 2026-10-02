@@ -13,12 +13,43 @@ test('AI configuration and channel triggers avoid duplicate replies', () => {
   assert.equal(shouldAnswer({ ...event, channel: 'qqbot' }, { actions: [], errors: [] }, config), 'AI 今天天气');
   assert.equal(shouldAnswer({ ...event, messageType: 'private', text: '开启AI回复' }, { actions: [], errors: [] }, { ...config, enabled: false }), '开启AI回复');
   assert.equal(shouldAnswer({ ...event, messageType: 'private', text: '你好' }, { actions: [], errors: [] }, { ...config, enabled: false }), null);
+  assert.equal(shouldAnswer({ ...event, messageType: 'private', text: '', images: [{ url: 'https://cdn.example.com/a.jpg' }] }, { actions: [], errors: [] }, config), '请识别这张图片');
+  assert.equal(shouldAnswer({ ...event, text: '', images: [{ url: 'https://cdn.example.com/a.jpg' }] }, { actions: [], errors: [] }, config), null);
   assert.notEqual(conversationKey(event), conversationKey({ ...event, userId: 'other' }));
   assert.equal(aiConfig().enabled, false);
   assert.throws(() => normalizeAiConfig({ ...config, model: '../bad' }), /Invalid AI/);
   assert.equal(normalizeAiConfig({ ...config, apiKey: '********' }, config).apiKey, 'test-key');
   assert.throws(() => normalizeAiConfig({ ...config, provider: 'gemini', apiKey: '********' }, config), /API key/);
   assert.throws(() => normalizeAiConfig({ ...config, timeZone: 'not/a-timezone' }), /time zone/);
+});
+
+test('Gemini and OpenAI send downloaded pictures as image input', async () => {
+  const picture = { url: 'https://cdn.example.com/product.jpg' };
+  const lookup = async () => [{ address: '8.8.8.8' }];
+  for (const provider of ['gemini', 'openai']) {
+    const config = normalizeAiConfig({ enabled: true, provider, model: provider === 'gemini' ? 'gemini-2.5-flash' : 'gpt-4.1-mini', apiKey: 'key', systemPrompt: 'Answer', channels: ['qq'], groupPrefix: 'AI' });
+    let payload;
+    const fetchImpl = async (url, options) => {
+      if (String(url) === picture.url) return { ok: true, headers: { get: name => name === 'content-type' ? 'image/jpeg' : null }, arrayBuffer: async () => Buffer.from([0xff, 0xd8, 0xff]) };
+      payload = JSON.parse(options.body);
+      return provider === 'gemini'
+        ? { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '一张商品图' }] } }] }) }
+        : { ok: true, json: async () => ({ output: [{ content: [{ type: 'output_text', text: '一张商品图' }] }] }) };
+    };
+    assert.equal(await generateAiReply(config, [], '识别图片', fetchImpl, new Date(), [picture], lookup), '一张商品图');
+    if (provider === 'gemini') assert.equal(payload.contents[0].parts[1].inlineData.data, '/9j/');
+    else assert.equal(payload.input[0].content[1].image_url, 'data:image/jpeg;base64,/9j/');
+    await assert.rejects(generateAiReply(config, [], '识别图片', fetchImpl, new Date(), [{ url: 'http://127.0.0.1/p.jpg' }], lookup), /public HTTPS/);
+    await assert.rejects(generateAiReply(config, [], '识别图片', fetchImpl, new Date(), [picture], async () => [{ address: '192.168.1.1' }]), /public address/);
+  }
+});
+
+test('AI rejects unsupported and oversized picture downloads', async () => {
+  const config = aiConfig({ provider: 'gemini', model: 'gemini-2.5-flash', apiKey: 'key' });
+  const picture = [{ url: 'https://cdn.example.com/a.jpg' }];
+  const lookup = async () => [{ address: '8.8.8.8' }];
+  await assert.rejects(generateAiReply(config, [], '看图', async () => ({ ok: true, headers: { get: () => 'text/html' } }), new Date(), picture, lookup), /Unsupported image format/);
+  await assert.rejects(generateAiReply(config, [], '看图', async () => ({ ok: true, headers: { get: name => name === 'content-type' ? 'image/jpeg' : '6000000' } }), new Date(), picture, lookup), /size limit/);
 });
 
 test('configuration commands accept explicit changes without treating questions as commands', () => {

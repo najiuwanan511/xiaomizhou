@@ -9,8 +9,9 @@ export function qqBotEvent(payload) {
   const chatId = String(group ? data.group_openid || '' : userId);
   const messageId = String(data.id || '');
   const text = String(data.content || '').trim().slice(0, 4000);
-  if (!userId || !chatId || !messageId || !text) return null;
-  return { channel: 'qqbot', chatId, userId, text, messageId, messageType: group ? 'group' : 'private', deliveryKey: `qqbot:${group ? 'group' : 'private'}:${chatId}:${messageId}` };
+  const images = Array.isArray(data.attachments) ? data.attachments.map(item => ({ url: String(item.url || ''), mimeType: String(item.content_type || 'image/jpeg') })).filter(image => /^https:\/\/[^\s]{1,2000}$/i.test(image.url) && /^image\//i.test(image.mimeType)).slice(0, 3) : [];
+  if (!userId || !chatId || !messageId || (!text && !images.length)) return null;
+  return { channel: 'qqbot', chatId, userId, text, images, messageId, messageType: group ? 'group' : 'private', deliveryKey: `qqbot:${group ? 'group' : 'private'}:${chatId}:${messageId}` };
 }
 
 export function qqBotDestination(action, event) {

@@ -35,12 +35,13 @@ export function decryptWecom(config, encrypted, signature, timestamp, nonce) {
 
 export function wecomEvent(raw, config) {
   const message = xml(raw);
-  if (message.MsgType !== 'text' || String(message.AgentID) !== String(config.agentId)) return null;
+  if (!['text', 'image'].includes(message.MsgType) || String(message.AgentID) !== String(config.agentId)) return null;
   const userId = String(message.FromUserName || '');
   const messageId = String(message.MsgId || '');
   const text = String(message.Content || '').trim().slice(0, 4000);
-  if (!userId || !messageId || !text || String(message.ToUserName) !== config.corpId) return null;
-  return { channel: 'wecom', chatId: userId, userId, text, messageId, messageType: 'private', deliveryKey: `wecom:${userId}:${messageId}` };
+  const images = message.MsgType === 'image' && /^https:\/\/[^\s]{1,2000}$/i.test(String(message.PicUrl || '')) ? [{ url: String(message.PicUrl), mimeType: 'image/jpeg' }] : [];
+  if (!userId || !messageId || (!text && !images.length) || String(message.ToUserName) !== config.corpId) return null;
+  return { channel: 'wecom', chatId: userId, userId, text: text || '请识别这张图片', images, messageId, messageType: 'private', deliveryKey: `wecom:${userId}:${messageId}` };
 }
 
 export function wecomDestination(action, event) {
