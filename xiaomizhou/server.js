@@ -6,7 +6,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync, backup } from 'node:sqlite';
 import { runPlugin } from './plugin-runner.js';
-import { oneBotEvent, qqDestination, oneBotCall, sendQq } from './qq-bridge.js';
+import { oneBotEvent, qqDestination, oneBotCall, sendQq, expandQqForward, qqForwardActions, createQqBatchQueue } from './qq-bridge.js';
 import { createQqBotBridge, qqBotDestination } from './qqbot-bridge.js';
 import { createWecomBridge, wecomCallback, wecomDestination, wecomEvent } from './wecom-bridge.js';
 import { applyRebates, convertAffiliate, rebateConfigured, defaultRebateTemplate, formatRebate, imageUrl, normalizeShareText, productUrls, validateRebateTemplate } from './rebate-automation.js';
@@ -28,11 +28,19 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS plugins (id INTEGER PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', source TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY, time TEXT NOT NULL, level TEXT NOT NULL, area TEXT NOT NULL, message TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS qq_deliveries (message_id TEXT NOT NULL, action_index INTEGER NOT NULL, delivered_at TEXT NOT NULL, PRIMARY KEY(message_id, action_index));
+  CREATE TABLE IF NOT EXISTS qq_forward_cache (message_id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS qq_forward_deliveries (message_id TEXT NOT NULL, action_key TEXT NOT NULL, delivered_at TEXT NOT NULL, PRIMARY KEY(message_id,action_key));
+  CREATE TABLE IF NOT EXISTS qq_pending_events (message_id TEXT PRIMARY KEY, payload TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'waiting', failures INTEGER NOT NULL DEFAULT 0, next_retry_at INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS forward_rules (id INTEGER PRIMARY KEY, source_channel TEXT NOT NULL, source_chat_id TEXT NOT NULL, target_channel TEXT NOT NULL, target TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'all', enabled INTEGER NOT NULL DEFAULT 1);
   CREATE TABLE IF NOT EXISTS ai_turns (delivery_key TEXT PRIMARY KEY, conversation_key TEXT NOT NULL, user_text TEXT NOT NULL, assistant_text TEXT NOT NULL, created_at TEXT NOT NULL);
   CREATE INDEX IF NOT EXISTS ai_turns_conversation ON ai_turns(conversation_key, created_at DESC);
   CREATE TABLE IF NOT EXISTS ai_config_proposals (id INTEGER PRIMARY KEY, channel TEXT NOT NULL, chat_id TEXT NOT NULL, user_id TEXT NOT NULL, setting_key TEXT NOT NULL, value TEXT NOT NULL, label TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL);
 `);
+// Idempotent migration for installations upgraded through the online updater.
+const forwardColumns = new Set(db.prepare('PRAGMA table_info(forward_rules)').all().map(column => column.name));
+for (const [name, declaration] of [['include_images', 'INTEGER NOT NULL DEFAULT 1'], ['split_forward', 'INTEGER NOT NULL DEFAULT 1'], ['send_interval', 'INTEGER NOT NULL DEFAULT 1000']]) {
+  if (!forwardColumns.has(name)) db.exec(`ALTER TABLE forward_rules ADD COLUMN ${name} ${declaration}`);
+}
 
 const q = {
   users: db.prepare('SELECT count(*) AS count FROM users'),
@@ -52,6 +60,8 @@ const putSetting = db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CO
 const insertLog = db.prepare('INSERT INTO logs(time,level,area,message) VALUES(?,?,?,?)');
 const deliveredQq = db.prepare('SELECT 1 FROM qq_deliveries WHERE message_id=? AND action_index=?');
 const markQqDelivered = db.prepare('INSERT OR IGNORE INTO qq_deliveries(message_id,action_index,delivered_at) VALUES(?,?,?)');
+const deliveredForward = db.prepare('SELECT 1 FROM qq_forward_deliveries WHERE message_id=? AND action_key=?');
+const markForwardDelivered = db.prepare('INSERT OR IGNORE INTO qq_forward_deliveries(message_id,action_key,delivered_at) VALUES(?,?,?)');
 const aiTurn = db.prepare('SELECT assistant_text FROM ai_turns WHERE delivery_key=?');
 const aiHistory = db.prepare('SELECT user_text,assistant_text FROM ai_turns WHERE conversation_key=? ORDER BY created_at DESC LIMIT 6');
 const saveAiTurn = db.prepare('INSERT OR IGNORE INTO ai_turns(delivery_key,conversation_key,user_text,assistant_text,created_at) VALUES(?,?,?,?,?)');
@@ -63,11 +73,64 @@ const updateAiProposal = db.prepare('UPDATE ai_config_proposals SET value=?,labe
 const getAiProposal = db.prepare('SELECT * FROM ai_config_proposals WHERE id=?');
 const settleAiProposal = db.prepare("UPDATE ai_config_proposals SET status=? WHERE id=? AND status='pending'");
 const qqInFlight = new Set();
+const enqueueQqBatch = createQqBatchQueue();
+const qqLastSent = new Map();
+const getForwardCache = db.prepare('SELECT payload FROM qq_forward_cache WHERE message_id=?');
+const saveForwardCache = db.prepare('INSERT OR IGNORE INTO qq_forward_cache(message_id,payload,created_at) VALUES(?,?,?)');
+const pendingQqEvent = db.prepare('SELECT failures FROM qq_pending_events WHERE message_id=?');
+const storePendingQq = db.prepare('INSERT OR IGNORE INTO qq_pending_events(message_id,payload,created_at) VALUES(?,?,?)');
+// A process exit may interrupt delivery before the HTTP callback receives a result.
+db.prepare("UPDATE qq_pending_events SET state='waiting' WHERE state='processing'").run();
 const qqStatus = { lastEventAt: null, lastError: null };
 function log(level, area, message) {
   insertLog.run(now(), level, area, String(message).slice(0, 1000));
   db.prepare('DELETE FROM logs WHERE id NOT IN (SELECT id FROM logs ORDER BY id DESC LIMIT 1000)').run();
 }
+
+async function runQqEvent(event) {
+  storePendingQq.run(event.deliveryKey, JSON.stringify(event), now());
+  db.prepare("UPDATE qq_pending_events SET state='processing' WHERE message_id=?").run(event.deliveryKey);
+  qqStatus.lastEventAt = now();
+  log('info', 'qq', `${event.messageType} message ${event.messageId} from ${event.chatId}`);
+  try {
+    if (event.hasForward && q.enabledRules.all().some(rule => rule.source_channel === 'qq' && rule.source_chat_id === event.chatId && rule.split_forward)) {
+      const cached = getForwardCache.get(event.deliveryKey);
+      event.forwardMessages = cached ? JSON.parse(cached.payload) : await expandQqForward(event, qqConfig());
+      if (!cached) {
+        saveForwardCache.run(event.deliveryKey, JSON.stringify(event.forwardMessages), now());
+        db.prepare('DELETE FROM qq_forward_cache WHERE created_at < ? OR message_id NOT IN (SELECT message_id FROM qq_forward_cache ORDER BY created_at DESC LIMIT 1000)').run(new Date(Date.now() - 7 * 86400 * 1000).toISOString());
+      }
+    }
+    const result = await processIncoming(event);
+    const delivery = await deliverActions(event, result);
+    // Retry blocked conversions too; successfully delivered ordinary nodes have receipts.
+    const errors = [...delivery.errors, ...result.errors.map(error => error.message)];
+    if (errors.length) throw Object.assign(new Error(errors.join('; ')), { response: { ...result, ...delivery } });
+    db.prepare("UPDATE qq_pending_events SET state='done' WHERE message_id=?").run(event.deliveryKey);
+    db.prepare("DELETE FROM qq_pending_events WHERE state IN ('done','failed') AND message_id NOT IN (SELECT message_id FROM qq_pending_events ORDER BY created_at DESC LIMIT 1000)").run();
+    qqStatus.lastError = null;
+    return { status: 200, result: { ...result, ...delivery } };
+  } catch (error) {
+    const failures = (pendingQqEvent.get(event.deliveryKey)?.failures || 0) + 1;
+    const retry = failures <= 3;
+    db.prepare('UPDATE qq_pending_events SET state=?,failures=?,next_retry_at=? WHERE message_id=?').run(retry ? 'waiting' : 'failed', failures, Date.now() + [30000, 60000, 120000][Math.min(failures - 1, 2)], event.deliveryKey);
+    qqStatus.lastError = error.message;
+    log('error', 'qq', `消息 ${event.messageId}: ${error.message}；${retry ? `已安排自动重试 ${failures}/3` : '自动重试已用尽，请查看 NapCat 日志'}`);
+    return { status: 502, result: { ...(error.response || { error: error.message }), retryScheduled: retry } };
+  }
+}
+
+let qqRetryBusy = false;
+setInterval(async () => {
+  if (qqRetryBusy || !qqConfig().enabled) return;
+  const job = db.prepare("SELECT message_id,payload FROM qq_pending_events WHERE state='waiting' AND next_retry_at<=? ORDER BY created_at LIMIT 1").get(Date.now());
+  if (!job || qqInFlight.has(job.message_id)) return;
+  qqRetryBusy = true;
+  qqInFlight.add(job.message_id);
+  try { await enqueueQqBatch(() => runQqEvent(JSON.parse(job.payload))); }
+  catch (error) { log('error', 'qq', `重试队列: ${error.message}`); }
+  finally { qqInFlight.delete(job.message_id); qqRetryBusy = false; }
+}, 5000).unref();
 function json(res, status, value, headers = {}) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
   res.end(JSON.stringify(value));
@@ -120,8 +183,9 @@ function processEvent(event, onlyId = null) {
   if (!onlyId) {
     for (const rule of q.enabledRules.all()) {
       if (rule.source_channel !== event.channel || rule.source_chat_id !== event.chatId) continue;
+      if (event.channel === 'qq') { actions.push(...qqForwardActions(event, rule)); continue; }
       if (rule.mode === 'links' && !/https?:\/\/\S+/i.test(normalizeShareText(event.text))) continue;
-      actions.push({ type: 'forward', channel: rule.target_channel, target: rule.target, text: event.text, plugin: `Rule #${rule.id}` });
+      actions.push({ type: 'forward', channel: rule.target_channel, target: rule.target, text: event.text, ...(rule.include_images ? { images: event.images || [] } : {}), plugin: `Rule #${rule.id}` });
     }
   }
   return { actions, errors };
@@ -136,10 +200,13 @@ function validRule(input) {
   if (targetChannel === 'qq' && input.enabled !== false && !/^(group|private):\d+$/.test(target)) throw Object.assign(new Error('QQ target must be group:ID or private:ID'), { status: 400 });
   if (targetChannel === 'qqbot' && input.enabled !== false && !/^(group|private):[^\s:]{1,120}$/.test(target)) throw Object.assign(new Error('QQ Bot target must be group:OpenID or private:OpenID'), { status: 400 });
   if (targetChannel === 'wecom' && input.enabled !== false && !/^user:[a-zA-Z0-9._@-]{1,120}$/.test(target)) throw Object.assign(new Error('WeCom target must be user:UserID'), { status: 400 });
-  return { sourceChannel, sourceChatId, targetChannel, target, mode: input.mode === 'links' ? 'links' : 'all', enabled: input.enabled !== false };
+  if (sourceChannel === 'qq' && targetChannel === 'qq' && target === `group:${sourceChatId}`) throw Object.assign(new Error('来源群和目标群不能相同'), { status: 400 });
+  const sendInterval = input.sendInterval ?? 1000;
+  if (!Number.isInteger(sendInterval) || sendInterval < 500 || sendInterval > 10000) throw Object.assign(new Error('发送间隔必须为 500–10000 毫秒'), { status: 400 });
+  return { sourceChannel, sourceChatId, targetChannel, target, mode: input.mode === 'links' ? 'links' : 'all', enabled: input.enabled !== false, includeImages: input.includeImages !== false, splitForward: input.splitForward !== false, sendInterval };
 }
 function listRules() {
-  return q.forwardRules.all().map(rule => ({ id: rule.id, sourceChannel: rule.source_channel, sourceChatId: rule.source_chat_id, targetChannel: rule.target_channel, target: rule.target, mode: rule.mode, enabled: !!rule.enabled }));
+  return q.forwardRules.all().map(rule => ({ id: rule.id, sourceChannel: rule.source_channel, sourceChatId: rule.source_chat_id, targetChannel: rule.target_channel, target: rule.target, mode: rule.mode, enabled: !!rule.enabled, includeImages: !!rule.include_images, splitForward: !!rule.split_forward, sendInterval: rule.send_interval }));
 }
 function qqConfig() {
   try { return JSON.parse(getSetting('qq.config', '{}')); }
@@ -233,9 +300,16 @@ async function deliverActions(event, result) {
       log('warn', event.channel, `Message ${event.messageId}, action ${index + 1}: unsupported destination`);
       continue;
     }
-    if (deliveredQq.get(event.deliveryKey, index)) continue;
+    if (deliveredQq.get(event.deliveryKey, index) || (action.deliveryId && deliveredForward.get(event.deliveryKey, action.deliveryId))) continue;
     try {
-      if (qqTarget) await sendQq(qqConfig(), qqTarget, action.text, action.images || []);
+      if (qqTarget) {
+        const targetKey = `${qqTarget.type}:${qqTarget.id}`;
+        const wait = (action.delayMs ?? 1000) - (Date.now() - (qqLastSent.get(targetKey) || 0));
+        if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
+        await sendQq(qqConfig(), qqTarget, action.text, action.images || [], action.segments || null);
+        qqLastSent.set(targetKey, Date.now());
+        if (qqLastSent.size > 1000) qqLastSent.delete(qqLastSent.keys().next().value);
+      }
       else if (botTarget) {
         // Reserve a sequence range for the action's text and up to three images.
         const sent = await qqBotBridge.send(botTarget, action.text, event.channel === 'qqbot' && botTarget.type === event.messageType && botTarget.id === event.chatId ? event.messageId : '', index * 4 + 1, action.images || []);
@@ -249,7 +323,8 @@ async function deliverActions(event, result) {
         warnings.push(`Action ${index + 1}: image omitted; destination supports text only`);
         log('warn', event.channel, `Message ${event.messageId}, action ${index + 1}: image omitted; destination supports text only`);
       }
-      markQqDelivered.run(event.deliveryKey, index, now());
+      if (action.deliveryId) markForwardDelivered.run(event.deliveryKey, action.deliveryId, now());
+      else markQqDelivered.run(event.deliveryKey, index, now());
       if (action.aiTurn) {
         saveAiTurn.run(action.aiTurn.key, action.aiTurn.conversation, action.aiTurn.prompt, action.aiTurn.answer, now());
         pruneAiTurns.run(new Date(Date.now() - 30 * 86400 * 1000).toISOString());
@@ -258,6 +333,7 @@ async function deliverActions(event, result) {
     } catch (error) {
       errors.push(`Action ${index + 1}: ${error.message}`);
       log('error', event.channel, `Message ${event.messageId}, action ${index + 1}: ${error.message}`);
+      if (qqTarget) break; // Keep later nodes behind the failed node on webhook retry.
     }
   }
   if (errors.length && event.channel === 'qq') qqStatus.lastError = errors.join('; ');
@@ -366,12 +442,9 @@ const server = http.createServer(async (req, res) => {
       if (qqInFlight.has(event.deliveryKey)) return json(res, 200, { duplicate: true, inFlight: true });
       qqInFlight.add(event.deliveryKey);
       try {
-        qqStatus.lastEventAt = now();
-        log('info', 'qq', `${event.messageType} message ${event.messageId} from ${event.chatId}`);
-        const result = await processIncoming(event);
-        const delivery = await deliverActions(event, result);
-        if (!delivery.errors.length) qqStatus.lastError = null;
-        return json(res, delivery.errors.length ? 502 : 200, { ...result, ...delivery });
+        storePendingQq.run(event.deliveryKey, JSON.stringify(event), now());
+        const outcome = await enqueueQqBatch(() => runQqEvent(event));
+        return json(res, outcome.status, outcome.result);
       } finally { qqInFlight.delete(event.deliveryKey); }
     }
     if (pathname === '/api/wecom/callback' && ['GET', 'POST'].includes(req.method)) {
@@ -547,7 +620,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/api/forwards') return json(res, 200, { rules: listRules() });
     if (req.method === 'POST' && pathname === '/api/forwards') {
       const rule = validRule(await body(req));
-      const result = db.prepare('INSERT INTO forward_rules(source_channel,source_chat_id,target_channel,target,mode,enabled) VALUES(?,?,?,?,?,?)').run(rule.sourceChannel, rule.sourceChatId, rule.targetChannel, rule.target, rule.mode, rule.enabled ? 1 : 0);
+      const result = db.prepare('INSERT INTO forward_rules(source_channel,source_chat_id,target_channel,target,mode,enabled,include_images,split_forward,send_interval) VALUES(?,?,?,?,?,?,?,?,?)').run(rule.sourceChannel, rule.sourceChatId, rule.targetChannel, rule.target, rule.mode, rule.enabled ? 1 : 0, rule.includeImages ? 1 : 0, rule.splitForward ? 1 : 0, rule.sendInterval);
       log('info', 'forward', `Created rule ${result.lastInsertRowid}`);
       return json(res, 201, { id: Number(result.lastInsertRowid) });
     }
@@ -557,7 +630,7 @@ const server = http.createServer(async (req, res) => {
       if (!db.prepare('SELECT 1 FROM forward_rules WHERE id=?').get(id)) return fail(res, 404, 'Rule not found');
       if (req.method === 'PUT') {
         const rule = validRule(await body(req));
-        db.prepare('UPDATE forward_rules SET source_channel=?,source_chat_id=?,target_channel=?,target=?,mode=?,enabled=? WHERE id=?').run(rule.sourceChannel, rule.sourceChatId, rule.targetChannel, rule.target, rule.mode, rule.enabled ? 1 : 0, id);
+        db.prepare('UPDATE forward_rules SET source_channel=?,source_chat_id=?,target_channel=?,target=?,mode=?,enabled=?,include_images=?,split_forward=?,send_interval=? WHERE id=?').run(rule.sourceChannel, rule.sourceChatId, rule.targetChannel, rule.target, rule.mode, rule.enabled ? 1 : 0, rule.includeImages ? 1 : 0, rule.splitForward ? 1 : 0, rule.sendInterval, id);
         log('info', 'forward', `Updated rule ${id}`);
         return json(res, 200, { ok: true });
       }

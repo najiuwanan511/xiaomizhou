@@ -307,11 +307,20 @@ export function productUrls(text, platformFor) {
 export async function applyRebates(event, result, config, convert, platformFor, log) {
   if (!config.enabled) return result;
   const conversions = [];
-  const urls = productUrls(event.text, platformFor);
+  const sources = event.hasForward ? [event.text, ...(event.forwardMessages || []).map(message => message.text)] : [event.text];
+  const urls = [...new Set(sources.flatMap(text => productUrls(text, platformFor)))];
+  if (urls.length > 10) {
+    for (const action of result.actions) if (action.type === 'forward') { action.type = 'blocked'; action.reason = 'Too many affiliate links'; }
+    const message = '合并消息包含超过 10 个商品链接，请拆成更小的记录后转链';
+    result.errors.push({ plugin: 'Affiliate conversion', message });
+    log('error', 'rebate', message);
+    return { ...result, conversions };
+  }
   for (const url of urls) {
     try {
       // A mixed message must never send another product's token to the provider.
-      const source = urls.length === 1 && platformFor(url) === 'taobao' ? normalizeShareText(event.text).trim() : url;
+      const owner = sources.find(text => productUrls(text, platformFor).includes(url)) || event.text;
+      const source = productUrls(owner, platformFor).length === 1 && platformFor(url) === 'taobao' ? normalizeShareText(owner).trim() : url;
       const conversion = await convert({ url: source });
       conversions.push(conversion);
       if (conversion.mode !== 'live') continue;
@@ -321,6 +330,8 @@ export async function applyRebates(event, result, config, convert, platformFor, 
       for (const action of result.actions) {
         if (action.type === 'forward' && normalizeShareText(action.text).includes(url)) {
           action.text = normalizeShareText(action.text).replaceAll(url, message);
+          // Ordered original segments still contain the unconverted URL.
+          delete action.segments;
           if (images.length) action.images = [...(action.images || []), ...images];
         }
       }

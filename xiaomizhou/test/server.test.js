@@ -398,7 +398,7 @@ test('QQ OneBot callback replies, forwards, deduplicates and retries failed send
     failNext = true;
     const group = { ...event, message_type: 'group', group_id: 321, message_id: 2, message: [{ type: 'text', data: { text: 'hello' } }, { type: 'image', data: { file: 'x' } }] };
     assert.equal((await request('/api/qq/events', group, token)).status, 502);
-    assert.equal((await request('/api/qq/events', group, token)).result.delivered, 1);
+    assert.equal((await request('/api/qq/events', group, token)).result.delivered, 2);
     assert.equal(calls.filter(call => call.path === '/send_group_msg' && call.body.group_id === 321).length, 2);
     assert.equal(calls.find(call => call.path === '/send_group_msg' && call.body.group_id === 456 && call.body.message === 'hello')?.body.message, 'hello');
   } finally {
