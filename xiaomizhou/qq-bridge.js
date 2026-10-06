@@ -129,17 +129,112 @@ export async function expandQqForward(event, config, call = oneBotCall) {
   return messages;
 }
 
-export function qqForwardActions(event, rule) {
+export function validateForwardContent(input = {}) {
+  const bad = message => { throw Object.assign(new Error(message), { status: 400 }); };
+  if (!input || typeof input !== 'object' || Array.isArray(input)) bad('内容处理配置必须为对象');
+  const keywords = input.blockedKeywords ?? [];
+  const replacements = input.replacements ?? [];
+  if (!Array.isArray(keywords) || keywords.length > 50 || keywords.some(word => typeof word !== 'string' || !word.trim() || word.trim().length > 100)) bad('禁止关键词最多 50 个，每个为 1–100 字');
+  if (input.ignoreCase != null && typeof input.ignoreCase !== 'boolean') bad('关键词忽略大小写开关必须为布尔值');
+  if (!Array.isArray(replacements) || replacements.length > 20) bad('文字或链接替换最多 20 条');
+  const rows = replacements.map(row => {
+    if (!row || typeof row !== 'object' || typeof row.find !== 'string' || !row.find.trim() || row.find.length > 500 || typeof row.replace !== 'string' || row.replace.length > 1000) bad('替换原文须为 1–500 字，替换内容最多 1000 字，可留空删除');
+    return { find: row.find, replace: row.replace };
+  });
+  return { blockedKeywords: [...new Set(keywords.map(word => word.trim()))], ignoreCase: input.ignoreCase !== false, replacements: rows };
+}
+
+export function forwardContentConfig(rule) {
+  return validateForwardContent(rule.contentRules ?? JSON.parse(rule.content_rules || '{}'));
+}
+
+export function blockedForwardKeyword(text, config) {
+  const normalize = value => {
+    const result = normalizeShareText(value).normalize('NFKC');
+    return config.ignoreCase ? result.toLowerCase() : result;
+  };
+  const haystack = normalize(String(text || ''));
+  return config.blockedKeywords.find(word => haystack.includes(normalize(word))) || null;
+}
+
+// Literal edits are applied to the joined text, then mapped back into text segments.
+// Images remain in place even when a match spans multiple text segments.
+function replaceForwardText(text, segments, row) {
+  const edits = [];
+  let at = 0;
+  while ((at = text.indexOf(row.find, at)) !== -1) { edits.push({ start: at, end: at + row.find.length }); at += row.find.length; }
+  if (!edits.length) return { text, segments, count: 0 };
+  if (text.length + edits.length * (row.replace.length - row.find.length) > 4000) return { overflow: true };
+  const output = text.split(row.find).join(row.replace);
+  let offset = 0;
+  const mapped = segments?.map(segment => {
+    if (segment.type !== 'text') return segment;
+    const value = segment.data.text;
+    const start = offset;
+    const end = start + value.length;
+    offset = end;
+    let cursor = start;
+    let replaced = '';
+    for (const edit of edits) {
+      if (edit.end <= start || edit.start >= end) continue;
+      if (edit.start > cursor) replaced += value.slice(cursor - start, edit.start - start);
+      if (edit.start >= start) replaced += row.replace;
+      cursor = Math.max(cursor, Math.min(edit.end, end));
+    }
+    replaced += value.slice(cursor - start);
+    return { type: 'text', data: { text: replaced } };
+  }).filter(segment => segment.type !== 'text' || segment.data.text);
+  return { text: output, segments: mapped, count: edits.length };
+}
+
+export function processForwardContent(message, config, sourceText = message.text) {
+  const keyword = blockedForwardKeyword(sourceText, config);
+  if (keyword) return { blocked: true, reason: 'source-keyword', keyword, text: message.text, replacements: 0 };
+  let text = String(message.text || '');
+  let segments = message.segments;
+  if (segments?.filter(part => part.type === 'text').map(part => part.data.text).join('') !== text) segments = undefined;
+  let replacements = 0;
+  for (const row of config.replacements) {
+    const output = replaceForwardText(text, segments, row);
+    if (output.overflow) return { blocked: true, reason: 'too-long', text, replacements };
+    text = output.text; segments = output.segments; replacements += output.count;
+  }
+  if (text.length > 4000) return { blocked: true, reason: 'too-long', text, replacements };
+  const finalKeyword = blockedForwardKeyword(text, config);
+  if (finalKeyword) return { blocked: true, reason: 'output-keyword', keyword: finalKeyword, text, replacements };
+  if (!text.trim() && !message.images?.length) return { blocked: true, reason: 'empty', text, replacements };
+  return { blocked: false, text, segments, replacements };
+}
+
+export function finalizeForwardActions(result, onCheck = () => {}) {
+  result.actions = result.actions.flatMap(action => {
+    if (action.type !== 'forward' || !action.contentRules) return [action];
+    const processed = processForwardContent(action, action.contentRules, action.sourceText);
+    onCheck(action, processed);
+    if (processed.blocked) return [];
+    const { sourceText, contentRules, ...outgoing } = action;
+    outgoing.text = processed.text;
+    if (processed.segments?.length) outgoing.segments = processed.segments;
+    else delete outgoing.segments;
+    return [outgoing];
+  });
+  return result;
+}
+
+export function qqForwardActions(event, rule, onBlock = () => {}) {
   if (rule.source_channel !== event.channel || rule.source_chat_id !== event.chatId) return [];
   // Sending back into the source conversation has no useful forwarding effect.
   if (rule.target_channel === event.channel && rule.target === `${event.messageType}:${event.chatId}`) return [];
+  const contentRules = forwardContentConfig(rule);
   const messages = event.hasForward && rule.split_forward !== 0 ? event.forwardMessages || [] : [event];
   return messages.flatMap((message, index) => {
+    const keyword = blockedForwardKeyword(message.text, contentRules);
+    if (keyword) { onBlock({ ruleId: rule.id, nodeIndex: index, keyword }); return []; }
     if (rule.mode === 'links' && !/https?:\/\/\S+/i.test(normalizeShareText(message.text))) return [];
     const images = rule.include_images !== 0 ? message.images || [] : [];
     if (!message.text.trim() && !images.length) return [];
     const segments = message.segments?.filter(segment => segment.type !== 'image' || rule.include_images !== 0);
-    return [{ type: 'forward', channel: rule.target_channel, target: rule.target, text: message.text, images, ...(rule.target_channel === 'qq' && segments?.length ? { segments } : {}), deliveryId: `rule:${rule.id}:node:${index}`, delayMs: rule.send_interval ?? 1000, plugin: `Rule #${rule.id}` }];
+    return [{ type: 'forward', channel: rule.target_channel, target: rule.target, text: message.text, sourceText: message.text, contentRules, images, ...(rule.target_channel === 'qq' && segments?.length ? { segments } : {}), deliveryId: `rule:${rule.id}:node:${index}`, delayMs: rule.send_interval ?? 1000, plugin: `Rule #${rule.id}` }];
   });
 }
 

@@ -6,7 +6,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync, backup } from 'node:sqlite';
 import { runPlugin } from './plugin-runner.js';
-import { oneBotEvent, qqDestination, oneBotCall, sendQq, expandQqForward, qqForwardActions, createQqBatchQueue } from './qq-bridge.js';
+import { oneBotEvent, qqDestination, oneBotCall, sendQq, expandQqForward, qqForwardActions, createQqBatchQueue, validateForwardContent, processForwardContent, finalizeForwardActions } from './qq-bridge.js';
 import { createQqBotBridge, qqBotDestination } from './qqbot-bridge.js';
 import { createWecomBridge, wecomCallback, wecomDestination, wecomEvent } from './wecom-bridge.js';
 import { applyRebates, convertAffiliate, rebateConfigured, defaultRebateTemplate, formatRebate, imageUrl, normalizeShareText, productUrls, validateRebateTemplate } from './rebate-automation.js';
@@ -38,7 +38,7 @@ db.exec(`
 `);
 // Idempotent migration for installations upgraded through the online updater.
 const forwardColumns = new Set(db.prepare('PRAGMA table_info(forward_rules)').all().map(column => column.name));
-for (const [name, declaration] of [['include_images', 'INTEGER NOT NULL DEFAULT 1'], ['split_forward', 'INTEGER NOT NULL DEFAULT 1'], ['send_interval', 'INTEGER NOT NULL DEFAULT 1000']]) {
+for (const [name, declaration] of [['include_images', 'INTEGER NOT NULL DEFAULT 1'], ['split_forward', 'INTEGER NOT NULL DEFAULT 1'], ['send_interval', 'INTEGER NOT NULL DEFAULT 1000'], ['content_rules', "TEXT NOT NULL DEFAULT '{}'"]]) {
   if (!forwardColumns.has(name)) db.exec(`ALTER TABLE forward_rules ADD COLUMN ${name} ${declaration}`);
 }
 
@@ -183,9 +183,7 @@ function processEvent(event, onlyId = null) {
   if (!onlyId) {
     for (const rule of q.enabledRules.all()) {
       if (rule.source_channel !== event.channel || rule.source_chat_id !== event.chatId) continue;
-      if (event.channel === 'qq') { actions.push(...qqForwardActions(event, rule)); continue; }
-      if (rule.mode === 'links' && !/https?:\/\/\S+/i.test(normalizeShareText(event.text))) continue;
-      actions.push({ type: 'forward', channel: rule.target_channel, target: rule.target, text: event.text, ...(rule.include_images ? { images: event.images || [] } : {}), plugin: `Rule #${rule.id}` });
+      actions.push(...qqForwardActions(event, rule, blocked => log('info', 'forward', `规则 #${blocked.ruleId} 第 ${blocked.nodeIndex + 1} 条命中禁止关键词：${blocked.keyword}`)));
     }
   }
   return { actions, errors };
@@ -203,10 +201,11 @@ function validRule(input) {
   if (sourceChannel === 'qq' && targetChannel === 'qq' && target === `group:${sourceChatId}`) throw Object.assign(new Error('来源群和目标群不能相同'), { status: 400 });
   const sendInterval = input.sendInterval ?? 1000;
   if (!Number.isInteger(sendInterval) || sendInterval < 500 || sendInterval > 10000) throw Object.assign(new Error('发送间隔必须为 500–10000 毫秒'), { status: 400 });
-  return { sourceChannel, sourceChatId, targetChannel, target, mode: input.mode === 'links' ? 'links' : 'all', enabled: input.enabled !== false, includeImages: input.includeImages !== false, splitForward: input.splitForward !== false, sendInterval };
+  const contentRules = validateForwardContent(input.contentRules ?? {});
+  return { sourceChannel, sourceChatId, targetChannel, target, mode: input.mode === 'links' ? 'links' : 'all', enabled: input.enabled !== false, includeImages: input.includeImages !== false, splitForward: input.splitForward !== false, sendInterval, contentRules };
 }
 function listRules() {
-  return q.forwardRules.all().map(rule => ({ id: rule.id, sourceChannel: rule.source_channel, sourceChatId: rule.source_chat_id, targetChannel: rule.target_channel, target: rule.target, mode: rule.mode, enabled: !!rule.enabled, includeImages: !!rule.include_images, splitForward: !!rule.split_forward, sendInterval: rule.send_interval }));
+  return q.forwardRules.all().map(rule => ({ id: rule.id, sourceChannel: rule.source_channel, sourceChatId: rule.source_chat_id, targetChannel: rule.target_channel, target: rule.target, mode: rule.mode, enabled: !!rule.enabled, includeImages: !!rule.include_images, splitForward: !!rule.split_forward, sendInterval: rule.send_interval, contentRules: validateForwardContent(JSON.parse(rule.content_rules || '{}')) }));
 }
 function qqConfig() {
   try { return JSON.parse(getSetting('qq.config', '{}')); }
@@ -245,6 +244,10 @@ function publicAiConfig() {
 const aiSessions = createAiSessions();
 async function processIncoming(event) {
   const result = await applyRebates(event, processEvent(event), rebateAutomation(), convert, platformFor, log);
+  finalizeForwardActions(result, (action, check) => {
+    if (check.blocked) log('info', 'forward', `${action.plugin} ${action.deliveryId} 已拦截：${check.reason}${check.keyword ? `，关键词：${check.keyword}` : ''}`);
+    else if (check.replacements) log('info', 'forward', `${action.plugin} ${action.deliveryId} 替换 ${check.replacements} 处文字或链接`);
+  });
   const config = getAiConfig();
   const decision = aiSessions.route(event, result, config);
   if (decision?.reply) {
@@ -618,9 +621,16 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/api/logs') return json(res, 200, { logs: q.logs.all() });
     if (req.method === 'GET' && pathname === '/api/plugins') return json(res, 200, { plugins: listPlugins() });
     if (req.method === 'GET' && pathname === '/api/forwards') return json(res, 200, { rules: listRules() });
+    if (req.method === 'POST' && pathname === '/api/forwards/preview') {
+      const input = await body(req);
+      const contentRules = validateForwardContent(input.contentRules ?? {});
+      if (typeof input.text !== 'string' || input.text.length > 4000) return fail(res, 400, '预览文案最多 4000 字');
+      const preview = processForwardContent({ text: input.text, images: input.hasImage ? [{ url: 'preview' }] : [] }, contentRules);
+      return json(res, 200, { ...preview, note: '仅预览文字处理，不发送消息或调用返利、AI 接口；实际转发在转链后执行替换。' });
+    }
     if (req.method === 'POST' && pathname === '/api/forwards') {
       const rule = validRule(await body(req));
-      const result = db.prepare('INSERT INTO forward_rules(source_channel,source_chat_id,target_channel,target,mode,enabled,include_images,split_forward,send_interval) VALUES(?,?,?,?,?,?,?,?,?)').run(rule.sourceChannel, rule.sourceChatId, rule.targetChannel, rule.target, rule.mode, rule.enabled ? 1 : 0, rule.includeImages ? 1 : 0, rule.splitForward ? 1 : 0, rule.sendInterval);
+      const result = db.prepare('INSERT INTO forward_rules(source_channel,source_chat_id,target_channel,target,mode,enabled,include_images,split_forward,send_interval,content_rules) VALUES(?,?,?,?,?,?,?,?,?,?)').run(rule.sourceChannel, rule.sourceChatId, rule.targetChannel, rule.target, rule.mode, rule.enabled ? 1 : 0, rule.includeImages ? 1 : 0, rule.splitForward ? 1 : 0, rule.sendInterval, JSON.stringify(rule.contentRules));
       log('info', 'forward', `Created rule ${result.lastInsertRowid}`);
       return json(res, 201, { id: Number(result.lastInsertRowid) });
     }
@@ -630,7 +640,7 @@ const server = http.createServer(async (req, res) => {
       if (!db.prepare('SELECT 1 FROM forward_rules WHERE id=?').get(id)) return fail(res, 404, 'Rule not found');
       if (req.method === 'PUT') {
         const rule = validRule(await body(req));
-        db.prepare('UPDATE forward_rules SET source_channel=?,source_chat_id=?,target_channel=?,target=?,mode=?,enabled=?,include_images=?,split_forward=?,send_interval=? WHERE id=?').run(rule.sourceChannel, rule.sourceChatId, rule.targetChannel, rule.target, rule.mode, rule.enabled ? 1 : 0, rule.includeImages ? 1 : 0, rule.splitForward ? 1 : 0, rule.sendInterval, id);
+        db.prepare('UPDATE forward_rules SET source_channel=?,source_chat_id=?,target_channel=?,target=?,mode=?,enabled=?,include_images=?,split_forward=?,send_interval=?,content_rules=? WHERE id=?').run(rule.sourceChannel, rule.sourceChatId, rule.targetChannel, rule.target, rule.mode, rule.enabled ? 1 : 0, rule.includeImages ? 1 : 0, rule.splitForward ? 1 : 0, rule.sendInterval, JSON.stringify(rule.contentRules), id);
         log('info', 'forward', `Updated rule ${id}`);
         return json(res, 200, { ok: true });
       }

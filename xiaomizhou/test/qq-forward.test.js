@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { oneBotEvent, qqMessageContent, expandQqForward, qqForwardActions, createQqBatchQueue } from '../qq-bridge.js';
+import { oneBotEvent, qqMessageContent, expandQqForward, qqForwardActions, createQqBatchQueue, validateForwardContent, processForwardContent, finalizeForwardActions } from '../qq-bridge.js';
 import { applyRebates } from '../rebate-automation.js';
 
 const text = value => ({ type: 'text', data: { text: value } });
@@ -14,6 +14,39 @@ const image = { type: 'image', data: { url: 'http://gchat.qpic.cn/example.jpg' }
 const forward = id => ({ type: 'forward', data: { id } });
 const incoming = (id, message, group = 321) => ({ post_type: 'message', message_type: 'group', user_id: 123, self_id: 999, group_id: group, message_id: id, message });
 const rule = { id: 1, source_channel: 'qq', source_chat_id: '321', target_channel: 'qq', target: 'group:456', mode: 'all', include_images: 1, split_forward: 1, send_interval: 500 };
+
+test('forward policy blocks original and resulting text, with normalized case and literal ordered edits', () => {
+  const policy = validateForwardContent({ blockedKeywords: ['广告', 'SPAM'], replacements: [{ find: '广告', replace: '' }, { find: '旧名称', replace: '中间名称' }, { find: '中间名称', replace: '小米粥' }, { find: 'https://old.example/a', replace: 'https://new.example/b' }] });
+  assert.equal(processForwardContent({ text: '广告链接' }, policy).reason, 'source-keyword');
+  assert.equal(processForwardContent({ text: 'ｓｐａｍ 内容' }, policy).blocked, true);
+  assert.equal(processForwardContent({ text: 'spam 内容' }, { ...policy, ignoreCase: false }).blocked, false);
+  const result = processForwardContent({ text: '旧名称 https://old.example/a https://old.example/a' }, policy);
+  assert.equal(result.text, '小米粥 https://new.example/b https://new.example/b');
+  assert.equal(result.replacements, 4);
+  assert.equal(processForwardContent({ text: '正常' }, validateForwardContent({ blockedKeywords: ['广告'], replacements: [{ find: '正常', replace: '广告' }] })).reason, 'output-keyword');
+  assert.equal(processForwardContent({ text: '[a].* $&' }, validateForwardContent({ replacements: [{ find: '[a].*', replace: '$&' }] })).text, '$& $&');
+  const deleting = validateForwardContent({ replacements: [{ find: '删除', replace: '' }] });
+  assert.equal(processForwardContent({ text: '删除' }, deleting).reason, 'empty');
+  assert.equal(processForwardContent({ text: '删除', images: [{ url: image.data.url }] }, deleting).blocked, false);
+  assert.equal(processForwardContent({ text: 'x'.repeat(4000) }, validateForwardContent({ replacements: [{ find: 'x', replace: 'xx' }] })).reason, 'too-long');
+  assert.equal(processForwardContent({ text: 'x'.repeat(4001) }, validateForwardContent()).reason, 'too-long');
+  for (const input of [{ blockedKeywords: '广告' }, { blockedKeywords: [''] }, { ignoreCase: 'false' }, { replacements: [{ find: '', replace: 'foo' }] }, { replacements: [{ find: 'x', replace: 1 }] }, { replacements: Array(21).fill({ find: 'x', replace: '' }) }]) assert.throws(() => validateForwardContent(input), error => error.status === 400);
+});
+
+test('text replacements span multiple segments and preserve images without stale links or CQ injection', () => {
+  const original = qqMessageContent([image, text('旧'), image, text('名称 https://old.example/a'), image]);
+  const output = processForwardContent(original, validateForwardContent({ replacements: [{ find: '旧名称', replace: '小米粥' }, { find: 'https://old.example/a', replace: '[CQ:at,qq=all]' }] }));
+  assert.deepEqual(output.segments.map(part => part.type), ['image', 'text', 'image', 'text', 'image']);
+  assert.equal(output.segments.filter(part => part.type === 'text').map(part => part.data.text).join(''), '小米粥 [CQ:at,qq=all]');
+  assert.equal(output.segments[1].data.text, '小米粥');
+  assert.ok(!JSON.stringify(output.segments).includes('old.example'));
+  const event = oneBotEvent(incoming(5, [text('https://item.jd.com/a')]));
+  const actions = qqForwardActions(event, { ...rule, contentRules: validateForwardContent({ replacements: [{ find: 'https://u.jd.com/promo', replace: 'https://example.com/my-link' }] }) });
+  actions[0].text = '返利链接 https://u.jd.com/promo'; delete actions[0].segments;
+  const finalized = finalizeForwardActions({ actions, errors: [] });
+  assert.equal(finalized.actions[0].text, '返利链接 https://example.com/my-link');
+  assert.equal(finalized.actions[0].contentRules, undefined);
+});
 
 test('QQ CQ and array messages retain HTTP images and text order without forwarding local files or CQ commands', () => {
   const event = oneBotEvent(incoming(1, '[CQ:image,url=http://gchat.qpic.cn/a.jpg?a=1&amp;b=2]前&#91;文&#93;[CQ:at,qq=all]https://example.com'));
@@ -131,6 +164,7 @@ test('server migrates old rules, sends ordered graph messages, caches split reco
     token = (await request('/api/settings')).result.webhookToken;
     const migrated = (await request('/api/forwards')).result.rules[0];
     assert.equal(migrated.includeImages, true); assert.equal(migrated.splitForward, true); assert.equal(migrated.sendInterval, 1000);
+    assert.deepEqual(migrated.contentRules, { blockedKeywords: [], ignoreCase: true, replacements: [] });
     assert.equal((await request('/api/forwards/1', 'PUT', { ...migrated, sendInterval: 1 })).status, 400);
     assert.equal((await request('/api/forwards/1', 'PUT', { ...migrated, target: 'group:321' })).status, 400);
     await request('/api/forwards/1', 'PUT', { ...migrated, sendInterval: 500 });
@@ -175,6 +209,31 @@ test('server migrates old rules, sends ordered graph messages, caches split reco
     assert.equal((await post(incoming(16, [forward('record')]))).result.delivered, 1);
     assert.equal(sent.length, changedAt + 3);
     assert.equal(sent.at(-1).message[0].data.text, '第三条');
+    const contentRules = { blockedKeywords: ['第三条', '广告'], ignoreCase: true, replacements: [{ find: '第一条', replace: '小米粥' }, { find: 'https://example.com', replace: 'https://example.org/my-link' }] };
+    assert.equal((await request('/api/forwards/1', 'PUT', { ...migrated, contentRules: { blockedKeywords: 'bad' } })).status, 400);
+    await request('/api/forwards/1', 'PUT', { ...migrated, contentRules, sendInterval: 500 });
+    assert.deepEqual((await request('/api/forwards')).result.rules[0].contentRules, contentRules);
+    const policyStart = sent.length;
+    assert.equal((await post(incoming(17, [forward('record')]))).result.delivered, 2);
+    assert.equal(sent.length, policyStart + 2);
+    assert.deepEqual(sent[policyStart].message.map(p => p.type), ['text', 'image', 'text']);
+    assert.equal(sent[policyStart].message[0].data.text, '小米粥');
+    assert.ok(sent[policyStart].message[2].data.text.includes('https://example.org/my-link'));
+    assert.equal((await post(incoming(18, [text('广告 https://example.com'), image]))).result.delivered, 0);
+    assert.equal(sent.length, policyStart + 2);
+    const preview = await request('/api/forwards/preview', 'POST', { text: '第一条 https://example.com', contentRules });
+    assert.equal(preview.result.text, '小米粥 https://example.org/my-link');
+    assert.equal(preview.result.blocked, false);
+    assert.equal(sent.length, policyStart + 2, 'preview must not send');
+    assert.equal((await request('/api/forwards/preview', 'POST', { text: '第三条', contentRules })).result.blocked, true);
+    const logs = (await request('/api/logs')).result.logs;
+    assert.ok(logs.some(entry => entry.area === 'forward' && entry.message.includes('第三条')));
+    const pending = new DatabaseSync(path.join(dataDir, 'ownman.db'));
+    assert.equal(pending.prepare('SELECT state FROM qq_pending_events WHERE message_id=?').get('999:group:321:18').state, 'done');
+    pending.close();
+    const originalCookie = cookie; cookie = '';
+    assert.equal((await request('/api/forwards/preview', 'POST', { text: '第三条', contentRules })).status, 401);
+    cookie = originalCookie;
   } finally {
     if (child?.exitCode === null) await stop();
     await new Promise(resolve => mock.close(resolve));
