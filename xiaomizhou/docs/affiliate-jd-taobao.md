@@ -95,3 +95,11 @@ v0.3.12 起，折淘客明确返回“商品 ID 解析错误”时，程序会�
 | 生成链接但没有佣金 | 核对媒体备案、推广位、商品是否可推广、联盟订单状态与平台归因规则；不要只凭链接能打开判断。 |
 
 密钥明文保存在 xiaomizhou 本地数据库，管理员页面会直接显示 AppSecret 和 Client Secret；「下载数据库备份」也包含原始密钥，应妥善保管。未经你的联盟账号实测，程序的模拟接口测试无法保证真实转链权限或佣金归因。
+
+## 五、QQ 官方机器人返利图片（v0.3.14）
+
+在「返利转链 → 消息自动转链」启用「附带商品图片」并保存；转链接口需实际返回商品图（京东可开启商品详情，淘宝可选简版或完整详情）。机器人私聊或群内 @ 回复将发送图文，商品图交给腾讯富媒体接口拉取，无需给 NAS 新增公网图片地址。
+
+图片上传失败时，系统保留返利文字，在「运行日志」的 qqbot 记录及「QQ 机器人」页显示具体错误；检查富媒体权限、商品图是否允许腾讯读取及 PNG/JPG 格式。图文发送失败、回复次数超限等会记录发送错误。每个发送动作最多 3 张去重图片，后续图片使用不同回复序号；平台限制仍适用。
+
+协议参考：[腾讯富媒体接口](https://github.com/tencent-connect/bot-docs/blob/main/docs/develop/api-v2/server-inter/message/send-receive/rich-media.md)、[腾讯发送消息接口](https://github.com/tencent-connect/bot-docs/blob/main/docs/develop/api-v2/server-inter/message/send-receive/send.md)。

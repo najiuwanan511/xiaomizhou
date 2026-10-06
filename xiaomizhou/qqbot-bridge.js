@@ -1,3 +1,5 @@
+import { imageUrl } from './rebate-automation.js';
+
 const apiBase = 'https://api.sgroup.qq.com';
 const tokenUrl = 'https://bots.qq.com/app/getAppAccessToken';
 
@@ -112,19 +114,66 @@ export function createQqBotBridge({ getConfig, onEvent, onError, fetchImpl = fet
     tokenExpiresAt = 0;
   }
   function start() { stop(); if (getConfig().enabled) { active = true; connect(); } }
-  async function send(destination, text, messageId = '', sequenceNumber = 1) {
-    const route = destination.type === 'group' ? `groups/${encodeURIComponent(destination.id)}` : `users/${encodeURIComponent(destination.id)}`;
-    const response = await fetchImpl(`${apiBase}/v2/${route}/messages`, {
+  async function post(route, payload, operation, timeoutMs = 10000) {
+    const response = await fetchImpl(`${apiBase}/v2/${route}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `QQBot ${await token()}` },
-      body: JSON.stringify({ content: String(text).slice(0, 4000), msg_type: 0, msg_seq: sequenceNumber, ...(messageId ? { msg_id: messageId } : {}) }),
-      signal: AbortSignal.timeout(10000),
-      redirect: 'error'
+      body: JSON.stringify(payload), signal: AbortSignal.timeout(timeoutMs), redirect: 'error'
     });
-    if (!response.ok) throw new Error(`QQ Bot send HTTP ${response.status}`);
-    const result = await response.json();
-    if (result.code && result.code !== 0) throw new Error(`QQ Bot send code ${result.code}`);
+    let result;
+    try { result = await response.json(); }
+    catch { throw new Error(`QQ Bot ${operation} HTTP ${response.status}: invalid JSON response`); }
+    if (!response.ok || (result?.code != null && String(result.code) !== '0')) {
+      let detail = String(result?.message || result?.msg || '').replace(/[\r\n\u0000-\u001f]/g, ' ').slice(0, 400);
+      for (const secret of [accessToken, getConfig().appSecret]) if (secret) detail = detail.replaceAll(secret, '[redacted]');
+      throw new Error(`QQ Bot ${operation} HTTP ${response.status}${result?.code != null ? ` code ${result.code}` : ''}${detail ? `: ${detail}` : ''}`);
+    }
+    if (!result || typeof result !== 'object') throw new Error(`QQ Bot ${operation}: invalid response`);
     return result;
+  }
+
+  async function send(destination, text, messageId = '', sequenceNumber = 1, images = []) {
+    const route = destination.type === 'group' ? `groups/${encodeURIComponent(destination.id)}` : `users/${encodeURIComponent(destination.id)}`;
+    const content = String(text).slice(0, 4000);
+    const warnings = [];
+    const sourceImages = Array.isArray(images) ? images : [];
+    const urls = [...new Set(sourceImages.map(image => imageUrl(image?.url)).filter(Boolean))];
+    if (sourceImages.some(image => !imageUrl(image?.url))) warnings.push('图片未发送：需要有效的公网 HTTPS 商品图地址。');
+    if (urls.length > 3) warnings.push('图片未全部发送：每个动作最多发送 3 张商品图。');
+    const media = [];
+    try {
+      for (const [index, url] of urls.slice(0, 3).entries()) {
+        try {
+          // Upload only. Send below as a reply so the original msg_id is retained.
+          const file = await post(`${route}/files`, { file_type: 1, url, srv_send_msg: false }, 'image upload', 20000);
+          if (typeof file.file_info !== 'string' || !file.file_info.trim()) throw new Error('QQ Bot image upload: missing file_info');
+          media.push({ file_info: file.file_info });
+        } catch (error) {
+          warnings.push(`商品图片 ${index + 1} 上传失败：${error.message}；请检查 QQ 平台富媒体权限及商品图是否允许腾讯服务器读取。`);
+        }
+      }
+      const reply = { ...(messageId ? { msg_id: messageId } : {}) };
+      // With one image this is a single image+text message, not two replies.
+      const first = await post(`${route}/messages`, {
+        content: media.length ? content || ' ' : content,
+        msg_type: media.length ? 7 : 0,
+        ...(media.length ? { media: media[0] } : {}),
+        msg_seq: sequenceNumber, ...reply
+      }, 'send');
+      for (let index = 1; index < media.length; index++) {
+        try {
+          await post(`${route}/messages`, { content: ' ', msg_type: 7, media: media[index], msg_seq: sequenceNumber + index, ...reply }, 'image send');
+        } catch (error) {
+          // The text and first picture are already delivered. Do not resend them.
+          warnings.push(`后续商品图片 ${index + 1} 未确认送达：${error.message}；首条图文已发送。`);
+        }
+      }
+      status.lastError = warnings.length ? warnings.join('; ') : null;
+      return { ...first, warnings };
+    } catch (error) {
+      status.lastError = [...warnings, error.message].join('; ');
+      throw error;
+    }
   }
   return { start, stop, token, gateway, send, status };
 }

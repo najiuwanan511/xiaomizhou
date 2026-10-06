@@ -236,9 +236,16 @@ async function deliverActions(event, result) {
     if (deliveredQq.get(event.deliveryKey, index)) continue;
     try {
       if (qqTarget) await sendQq(qqConfig(), qqTarget, action.text, action.images || []);
-      else if (botTarget) await qqBotBridge.send(botTarget, action.text, event.channel === 'qqbot' && botTarget.type === event.messageType && botTarget.id === event.chatId ? event.messageId : '', index + 1);
+      else if (botTarget) {
+        // Reserve a sequence range for the action's text and up to three images.
+        const sent = await qqBotBridge.send(botTarget, action.text, event.channel === 'qqbot' && botTarget.type === event.messageType && botTarget.id === event.chatId ? event.messageId : '', index * 4 + 1, action.images || []);
+        for (const warning of sent.warnings || []) {
+          warnings.push(`Action ${index + 1}: ${warning}`);
+          log('warn', 'qqbot', `Message ${event.messageId}, action ${index + 1}: ${warning}`);
+        }
+      }
       else await wecomBridge.send(wecomTarget, action.text);
-      if (!qqTarget && action.images?.length) {
+      if (wecomTarget && action.images?.length) {
         warnings.push(`Action ${index + 1}: image omitted; destination supports text only`);
         log('warn', event.channel, `Message ${event.messageId}, action ${index + 1}: image omitted; destination supports text only`);
       }
