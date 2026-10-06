@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync, backup } from 'node:sqlite';
-import { runPlugin } from './plugin-runner.js';
+import { runPlugin, builtinReply } from './plugin-runner.js';
 import { oneBotEvent, qqDestination, oneBotCall, sendQq, expandQqForward, qqForwardActions, createQqBatchQueue, validateForwardContent, processForwardContent, finalizeForwardActions } from './qq-bridge.js';
 import { createQqBotBridge, qqBotDestination } from './qqbot-bridge.js';
 import { createWecomBridge, wecomCallback, wecomDestination, wecomEvent } from './wecom-bridge.js';
@@ -243,6 +243,8 @@ function publicAiConfig() {
 }
 const aiSessions = createAiSessions();
 async function processIncoming(event) {
+  const command = builtinReply(event);
+  if (command) return { actions: [command], errors: [] };
   const result = await applyRebates(event, processEvent(event), rebateAutomation(), convert, platformFor, log);
   finalizeForwardActions(result, (action, check) => {
     if (check.blocked) log('info', 'forward', `${action.plugin} ${action.deliveryId} 已拦截：${check.reason}${check.keyword ? `，关键词：${check.keyword}` : ''}`);

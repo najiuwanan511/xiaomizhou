@@ -1,5 +1,13 @@
 import vm from 'node:vm';
 
+export function builtinReply(event, date = new Date()) {
+  if (event.hasForward || event.images?.length || !/^(?:\/?time|时间|当前时间)$/i.test(String(event.text || '').trim())) return null;
+  const timeZone = 'Asia/Shanghai';
+  const time = new Intl.DateTimeFormat('sv-SE', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(date);
+  const weekday = new Intl.DateTimeFormat('zh-CN', { timeZone, weekday: 'long' }).format(date);
+  return { type: 'reply', text: `当前时间：${time} ${weekday}\n北京时间（UTC+8）`, plugin: '系统命令' };
+}
+
 export function runPlugin(source, event) {
   const safeEvent = JSON.stringify({
     channel: String(event.channel || ''),

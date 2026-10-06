@@ -32,10 +32,10 @@ test('real server pipeline delivers QQ Bot rebate images for private and group r
     }
     assert.fail('QQ Bot processing did not complete');
   }
-  function event(id, group = false) {
+  function event(id, group = false, content = 'https://m.tb.cn/h.test') {
     writeFileSync(path.join(dataDir, 'pending-event.json'), JSON.stringify({ op: 0, t: group ? 'GROUP_AT_MESSAGE_CREATE' : 'C2C_MESSAGE_CREATE', d: {
       id, group_openid: group ? 'group-openid' : undefined,
-      author: group ? { member_openid: 'member-openid' } : { user_openid: 'private-openid' }, content: 'https://m.tb.cn/h.test'
+      author: group ? { member_openid: 'member-openid' } : { user_openid: 'private-openid' }, content
     } }));
     renameSync(path.join(dataDir, 'pending-event.json'), path.join(dataDir, 'qqbot-event.json'));
   }
@@ -45,6 +45,14 @@ test('real server pipeline delivers QQ Bot rebate images for private and group r
     await request('/api/rebates', 'PUT', { platform: 'taobao', provider: 'zhetaoke', ztkAppKey: 'tb-key', ztkSid: 'tb-sid', ztkPid: 'mm_111_222_333', ztkRelationId: '456', ztkTaobaoSignurl: '5' });
     await request('/api/rebates/automation', 'PUT', { enabled: true, reply: true, image: true });
     await request('/api/qqbot', 'PUT', { enabled: true, appId: '123', appSecret: 'mock-secret' });
+    for (const [id, group] of [['private-time', false], ['group-time', true]]) {
+      event(id, group, ' time ');
+      await waitFor(() => calls().some(call => call.body.msg_id === id));
+      const sent = calls().find(call => call.body.msg_id === id);
+      assert.equal(sent.body.msg_type, 0);
+      assert.match(sent.body.content, /^当前时间：.*北京时间（UTC\+8）$/s);
+      assert.equal(sent.body.msg_seq, 1);
+    }
     for (const [id, group] of [['private-1', false], ['group-1', true]]) {
       event(id, group);
       await waitFor(() => calls().some(call => call.body.msg_id === id));

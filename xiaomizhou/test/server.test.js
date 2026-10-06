@@ -9,9 +9,21 @@ import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { applyRebates, formatRebate, imageUrl, productUrls, validateRebateTemplate } from '../rebate-automation.js';
 import { oneBotEvent, sendQq } from '../qq-bridge.js';
+import { builtinReply } from '../plugin-runner.js';
 
 const appShareUrl = 'https://3.cn/35-zYL9p?jkl=@U55sUCWNwMY6@';
 const appShareText = `【京东】${appShareUrl} MF8335 「小米平板9 Pro【国家补贴】」\n点击链接直接打开 或者复制文案打开京东`;
+
+test('built-in time command formats the server clock in Beijing time and does not consume other messages', () => {
+  for (const command of ['time', ' TIME ', '/time', '/TIME', '时间', '当前时间']) {
+    const action = builtinReply({ text: command }, new Date('2026-10-05T16:00:01.000Z'));
+    assert.equal(action.text, '当前时间：2026-10-06 00:00:01 星期二\n北京时间（UTC+8）');
+    assert.equal(action.type, 'reply'); assert.equal(action.plugin, '系统命令');
+  }
+  for (const text of ['time to go', 'AI time', 'what time', 'timely', '', '时间怎么设置']) assert.equal(builtinReply({ text }), null);
+  assert.equal(builtinReply({ text: 'time', hasForward: true }), null);
+  assert.equal(builtinReply({ text: 'time', images: [{ url: 'https://example.com/a.jpg' }] }), null);
+});
 
 async function freePort() {
   const socket = net.createServer();
@@ -444,6 +456,15 @@ test('QQ messages use AI memory and plugin replies take precedence', async () =>
     assert.equal((await request('/api/setup', 'POST', { username: 'admin', password: 'a-long-test-password' })).status, 200);
     const token = (await request('/api/settings')).result.webhookToken;
     await request('/api/qq', 'PUT', { enabled: true, endpoint: `http://127.0.0.1:${apiPort}`, accessToken: '' });
+    const timePlugin = await request('/api/plugins', 'POST', { name: 'Time priority', source: 'function handle(event, api) { if (event.text.trim().toLowerCase() === "time") api.reply("Plugin time must not run"); }' });
+    await request(`/api/plugins/${timePlugin.result.id}/toggle`, 'POST', {});
+    const timeEvent = id => ({ post_type: 'message', message_type: 'private', user_id: 123, self_id: 999, message_id: id, raw_message: '  TIME  ' });
+    const builtIn = await request('/api/qq/events', 'POST', timeEvent(50), token);
+    assert.equal(builtIn.result.delivered, 1); assert.equal(builtIn.result.actions.length, 1);
+    assert.equal(builtIn.result.actions[0].plugin, '系统命令');
+    assert.match(sent.at(-1).message, /^当前时间：\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} 星期[一二三四五六日]\n北京时间（UTC\+8）$/);
+    assert.equal((await request('/api/ai')).result.historyCount, 0);
+    sent.length = 0;
     await request('/api/ai', 'PUT', { enabled: true, provider: 'openai', model: 'gpt-4.1-mini', apiKey: 'test-key', systemPrompt: 'Test', channels: ['qq'], groupPrefix: 'AI' });
     const event = id => ({ post_type: 'message', message_type: 'private', user_id: 123, self_id: 999, message_id: id, raw_message: `${id === 1 ? 'AI ' : ''}message-${id}` });
     assert.equal((await request('/api/qq/events', 'POST', event(1), token)).result.delivered, 1);
@@ -453,6 +474,10 @@ test('QQ messages use AI memory and plugin replies take precedence', async () =>
     assert.equal((await request('/api/qq/events', 'POST', event(2), token)).result.delivered, 0);
     assert.equal(sent.length, 2);
     assert.equal((await request('/api/ai')).result.historyCount, 2);
+    const activeTime = await request('/api/qq/events', 'POST', timeEvent(51), token);
+    assert.equal(activeTime.result.actions[0].plugin, '系统命令');
+    assert.equal((await request('/api/ai')).result.historyCount, 2, 'time must not enter the active AI session history');
+    assert.ok(!sent.at(-1).message.startsWith('AI-'));
     const plugin = await request('/api/plugins', 'POST', { name: 'Override', source: 'function handle(event, api) { if (event.text === "plugin") api.reply("Plugin"); }' });
     await request(`/api/plugins/${plugin.result.id}/toggle`, 'POST', {});
     const third = { ...event(3), raw_message: 'plugin' };
