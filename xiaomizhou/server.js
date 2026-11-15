@@ -12,7 +12,7 @@ import { createWecomBridge, wecomCallback, wecomDestination, wecomEvent } from '
 import { applyRebates, convertAffiliate, rebateConfigured, defaultRebateTemplate, formatRebate, imageUrl, normalizeShareText, productUrls, validateRebateTemplate } from './rebate-automation.js';
 import { aiConfig, createAiSessions, generateAiReply, normalizeAiConfig, parseAiConfigRequest } from './ai-brain.js';
 import { checkUpdate, installUpdate } from './update-manager.js';
-import { createNapcatManager, parseNapcatConfig } from './napcat-manager.js';
+import { createNapcatManager, parseNapcatConfig, parseQqNotificationConfig, publicQqNotificationConfig, createQqOfflineNotifier, sendQqNotification } from './napcat-manager.js';
 import { bundledRuntimeStatus } from './bundled-runtime.js';
 import { readNapcatUpdateStatus } from './napcat-updater.js';
 
@@ -139,7 +139,8 @@ function chineseLog(message, area) {
 }
 function safeLogMessage(message) {
   let value = String(message);
-  for (const secret of [getSetting('webhookToken'), napcatConfig().webuiToken, qqConfig().accessToken]) {
+  const notification = qqNotificationConfig();
+  for (const secret of [getSetting('webhookToken'), napcatConfig().webuiToken, qqConfig().accessToken, notification.pushplusToken, notification.wecomKey, notification.smtpPassword]) {
     if (secret) value = value.split(secret).join('[已隐藏]');
   }
   return value.replace(/([?&](?:token|access_token|accessToken|webuiToken)=)[^\s&#]+/gi, '$1[已隐藏]').replace(/Bearer\s+[^\s,;]+/gi, 'Bearer [已隐藏]').replace(/data:image\/png;base64,[A-Za-z0-9+/=]+/g, '[二维码已隐藏]').slice(0, 1000);
@@ -310,6 +311,42 @@ function publicNapcatConfig() {
   if (process.env.NAPCAT_BUNDLED === '1') return { bundled: true, webuiUrl: '', webuiToken: '', onebotUrl: '', callbackBaseUrl: '' };
   return { bundled: false, ...config, webuiToken: config.webuiToken ? '********' : '' };
 }
+function qqNotificationConfig() {
+  try { return JSON.parse(getSetting('qq.notifications', '{}')); } catch { return {}; }
+}
+const qqOfflineNotifier = createQqOfflineNotifier({
+  getConfig: qqNotificationConfig,
+  loadState: () => { try { return JSON.parse(getSetting('qq.notifications.state', '{}')); } catch { return {}; } },
+  saveState: state => putSetting.run('qq.notifications.state', JSON.stringify(state)),
+  log: (level, message) => log(level, 'qq', message)
+});
+let notificationMonitorBusy = false;
+let notificationTestAt = 0;
+async function monitorQqNotifications() {
+  if (notificationMonitorBusy || !qqNotificationConfig().enabled) return;
+  notificationMonitorBusy = true;
+  try {
+    const management = napcatConfig();
+    let sample;
+    if (management.webuiUrl && management.webuiToken) sample = await napcatManager.status();
+    else {
+      const config = qqConfig();
+      if (!config.enabled || !config.endpoint) return;
+      try {
+        const status = await oneBotCall(config, 'get_status', {});
+        if (typeof status?.online !== 'boolean') throw new Error('消息接口未返回 online 状态，无法确认 QQ 是否在线');
+        if (status.online) {
+          const account = await oneBotCall(config, 'get_login_info', {});
+          sample = { state: 'online', account: { userId: String(account?.user_id || ''), nickname: String(account?.nickname || '') } };
+        } else sample = { state: 'offline' };
+      } catch (error) { sample = { state: 'unreachable', error: safeLogMessage(error.message) }; }
+    }
+    await qqOfflineNotifier.tick({ ...sample, error: sample.error ? safeLogMessage(sample.error) : null });
+  } catch (error) { log('error', 'qq', `掉线通知检测失败：${error.message}`); }
+  finally { notificationMonitorBusy = false; }
+}
+setInterval(monitorQqNotifications, 15000).unref();
+setTimeout(monitorQqNotifications, 1000).unref();
 const napcatManager = createNapcatManager({ getConfig: napcatConfig, getQqConfig: qqConfig });
 let napcatAutoBusy = false;
 let napcatAutoSynced = false;
@@ -743,7 +780,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/api/napcat/status') {
       const status = await napcatManager.status();
       observeNapcatStatus(status);
-      return json(res, 200, { ...status, lastEventAt: qqStatus.lastEventAt, autoError: napcatAutoError, runtime: process.env.NAPCAT_BUNDLED === '1' ? bundledRuntimeStatus(process.env.NAPCAT_STATUS_FILE) : null });
+      return json(res, 200, { ...status, notificationStatus: qqOfflineNotifier.status(), lastEventAt: qqStatus.lastEventAt, autoError: napcatAutoError, runtime: process.env.NAPCAT_BUNDLED === '1' ? bundledRuntimeStatus(process.env.NAPCAT_STATUS_FILE) : null });
     }
     if (req.method === 'POST' && pathname === '/api/napcat/restart') {
       if (process.env.NAPCAT_BUNDLED !== '1' || !process.send) return fail(res, 409, '当前不是内置 QQ 镜像');
@@ -764,6 +801,24 @@ const server = http.createServer(async (req, res) => {
       });
       log('info', 'napcat', 'NapCat message API and callback configured');
       return json(res, 200, result);
+    }
+    if (req.method === 'GET' && pathname === '/api/qq/notifications') return json(res, 200, { ...publicQqNotificationConfig(parseQqNotificationConfig(qqNotificationConfig())), status: qqOfflineNotifier.status() });
+    if (req.method === 'PUT' && pathname === '/api/qq/notifications') {
+      const config = parseQqNotificationConfig(await body(req), qqNotificationConfig());
+      const management = napcatConfig(), bridge = qqConfig();
+      if (config.enabled && !(management.webuiUrl && management.webuiToken) && !(bridge.enabled && bridge.endpoint)) return fail(res, 400, '请先配置个人 QQ 或 NapCat 连接，再开启掉线提醒');
+      putSetting.run('qq.notifications', JSON.stringify(config));
+      log('info', 'qq', `QQ 掉线提醒${config.enabled ? '已启用' : '已停用'}；渠道：${{ pushplus: 'PushPlus', wecom: '企业微信机器人', email: '邮件' }[config.provider]}`);
+      void monitorQqNotifications();
+      return json(res, 200, { ...publicQqNotificationConfig(config), status: qqOfflineNotifier.status() });
+    }
+    if (req.method === 'POST' && pathname === '/api/qq/notifications/test') {
+      if (Date.now() - notificationTestAt < 30000) return fail(res, 429, '请等待 30 秒后再发送测试通知');
+      const config = parseQqNotificationConfig({ ...qqNotificationConfig(), enabled: true });
+      notificationTestAt = Date.now();
+      await sendQqNotification(config, '【小米粥】QQ 掉线提醒测试', '这是一条测试通知。收到后请开启掉线提醒；小米粥会在 QQ 持续离线达到设定时间后通知，并可在恢复上线时通知。');
+      log('info', 'qq', 'QQ 掉线提醒测试已提交，请到接收渠道确认');
+      return json(res, 200, { ok: true, message: '测试通知已提交，请到接收渠道确认是否收到' });
     }
     if (req.method === 'GET' && pathname === '/api/qq') return json(res, 200, publicQqConfig());
     if (req.method === 'PUT' && pathname === '/api/qq') {

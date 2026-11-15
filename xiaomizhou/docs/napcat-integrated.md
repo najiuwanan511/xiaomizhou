@@ -1,6 +1,6 @@
 # 小米粥内置 NapCat 与在线更新
 
-v0.3.19 完整镜像包含 NapCat 4.18.42 + Linux QQ 3.2.34-53644。归档通过固定 SHA-256 校验，发布流水线在 Linux Runner 上执行完整镜像构建与真实内核登录二维码检查，成功后才发布镜像和 Release。请以 [Releases](https://github.com/najiuwanan511/xiaomizhou/releases) 和对应 Actions 成功记录确认版本是否已上线。自动化检查不登录个人账号，实际扫码确认及消息收发仍需在目标设备验证。
+v0.3.20 完整镜像包含 NapCat 4.18.42 + Linux QQ 3.2.34-53644。归档通过固定 SHA-256 校验，发布流水线在 Linux Runner 上执行完整镜像构建与真实内核登录二维码检查，成功后才发布镜像和 Release。请以 [Releases](https://github.com/najiuwanan511/xiaomizhou/releases) 和对应 Actions 成功记录确认版本是否已上线。自动化检查不登录个人账号，实际扫码确认及消息收发仍需在目标设备验证。
 
 发布镜像目前为 linux/amd64，适用于 Intel/AMD x86_64 飞牛设备；ARM64 使用下文的源码构建步骤。
 
@@ -50,7 +50,7 @@ v0.3.19 完整镜像包含 NapCat 4.18.42 + Linux QQ 3.2.34-53644。归档通过
 先下载源码并进入应用目录：
 
 ```sh
-git clone --branch v0.3.19 --single-branch https://github.com/najiuwanan511/xiaomizhou.git "$HOME/xiaomizhou-napcat"
+git clone --branch v0.3.20 --single-branch https://github.com/najiuwanan511/xiaomizhou.git "$HOME/xiaomizhou-napcat"
 cd "$HOME/xiaomizhou-napcat/xiaomizhou"
 ```
 

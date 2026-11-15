@@ -1,6 +1,6 @@
 services:
   xiaomizhou:
-    image: ghcr.io/najiuwanan511/xiaomizhou:v0.3.19
+    image: ghcr.io/najiuwanan511/xiaomizhou:v0.3.20
     container_name: xiaomizhou
     restart: unless-stopped
     ports:

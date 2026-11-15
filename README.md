@@ -6,7 +6,7 @@
 
 v0.3.18 将 Linux QQ、NapCat Shell 内核及原生库一起打进小米粥：一个容器，后台直接扫码，内部自动配置消息收发。包含 NapCat 4.18.42、Linux QQ 3.2.34-53644，以及内核在线更新、失败自动回滚和手动回滚。
 
-完整镜像面向 Intel/AMD x86_64 飞牛设备。发布流程必须通过自动化测试和真实 QQ/NapCat 生成登录二维码的检查，才上传镜像并创建 [GitHub Release](https://github.com/najiuwanan511/xiaomizhou/releases)。安装前确认 v0.3.19 发布成功；仅推送源码不会生成新镜像。个人账号的扫码确认及消息收发仍需在设备上验证。详情见 [内核与更新说明](xiaomizhou/docs/napcat-integrated.md)。
+完整镜像面向 Intel/AMD x86_64 飞牛设备。发布流程必须通过自动化测试和真实 QQ/NapCat 生成登录二维码的检查，才上传镜像并创建 [GitHub Release](https://github.com/najiuwanan511/xiaomizhou/releases)。安装前确认 v0.3.20 发布成功；仅推送源码不会生成新镜像。个人账号的扫码确认及消息收发仍需在设备上验证。详情见 [内核与更新说明](xiaomizhou/docs/napcat-integrated.md)。
 
 v0.3.15 起支持转发原消息文字、链接、图片和图文，并把 QQ 合并聊天记录拆成普通消息，
 由当前登录 QQ 逐条发送。转发规则提供原图开关、拆分开关和发送间隔；队列支持去重与自动重试。
@@ -21,7 +21,13 @@ v0.3.19 将日志级别、模块和常见事件改为中文，已有英文记录
 
 「个人 QQ」页面新增独立日志，记录 NapCat 登录、掉线、连接、内核更新，以及个人 QQ 消息的插件、AI、返利、回复、转发与失败重试。其他渠道的记录不会混入；来源不明的历史插件／返利日志只保留在全局日志。上游未识别的技术错误保留原文和错误码，便于排错。
 
-已安装完整 v0.3.18 镜像的用户可在「在线更新」升级小米粥至 v0.3.19，也可更新完整镜像。两种方式均保留原数据卷。
+已安装完整 v0.3.18 或 v0.3.19 镜像的用户可在「在线更新」升级小米粥至 v0.3.20，也可更新完整镜像。两种方式均保留原数据卷。
+
+## QQ 掉线提醒
+
+v0.3.20 在「个人 QQ → QQ 掉线提醒」中增加 PushPlus（微信接收）、企业微信机器人和邮件三种通知渠道。默认关闭，填写渠道凭证、保存并发送测试通知，确认收到后开启。默认持续离线 60 秒后提醒，每 15 秒后台检测一次；关闭浏览器也继续运行。同一次掉线成功通知后不重复发送，支持恢复通知、失败重试和重启后继续监测。
+
+首次检测到 QQ 在线后才开始判断掉线，首次扫码前不会误报。邮件使用 SMTP SSL/TLS 直连，通常为 465 端口。通知详情、渠道设置与限制见 [掉线提醒说明](xiaomizhou/docs/qq-offline-notifications.md)。
 
 ## 内置命令
 
@@ -33,18 +39,18 @@ v0.3.17 起，发送 `time`、`/time`、`时间` 或 `当前时间`，直接返�
 已启用 Docker 的飞牛设备可通过 SSH 一键安装：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/najiuwanan511/xiaomizhou/v0.3.19/xiaomizhou/compose.image.yml | sudo docker compose -p xiaomizhou -f - up -d
+curl -fsSL https://raw.githubusercontent.com/najiuwanan511/xiaomizhou/v0.3.20/xiaomizhou/compose.image.yml | sudo docker compose -p xiaomizhou -f - up -d
 ```
 
 此命令使用 `xiaomizhou` 项目和命名数据卷；已有其他项目名或绑定目录的用户，请在原项目中更新镜像并保留原挂载。
 
-安装应用中心的 **Docker** 并启动。确认 [Releases](https://github.com/najiuwanan511/xiaomizhou/releases) 中有 v0.3.19 后，在飞牛 Docker 应用中打开
+安装应用中心的 **Docker** 并启动。确认 [Releases](https://github.com/najiuwanan511/xiaomizhou/releases) 中有 v0.3.20 后，在飞牛 Docker 应用中打开
 「Compose」→「新增项目」，项目名称填 `xiaomizhou`，粘贴下方配置并启动：
 
 ```yaml
 services:
   xiaomizhou:
-    image: ghcr.io/najiuwanan511/xiaomizhou:v0.3.19
+    image: ghcr.io/najiuwanan511/xiaomizhou:v0.3.20
     container_name: xiaomizhou
     restart: unless-stopped
     ports:

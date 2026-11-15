@@ -1,8 +1,10 @@
 # xiaomizhou
 
+v0.3.20 新增个人 QQ 掉线提醒：支持 PushPlus、企业微信机器人、SMTP 安全邮件；默认离线 60 秒后通知，可选择恢复提醒，失败自动重试。后台每 15 秒检测，不依赖打开网页，状态持久保存。进入「个人 QQ → QQ 掉线提醒」配置并测试，使用方式见 [掉线提醒说明](docs/qq-offline-notifications.md)。
+
 v0.3.19 新增中文日志、级别／模块筛选与自动刷新，并在「个人 QQ」页提供独立日志。个人 QQ 消息的插件、AI、返利与投递记录按来源隔离，包含成功结果、发送目标、失败原因与重试；旧版常见英文日志查看时转换为中文。无法确定来源的历史插件日志保留在全局日志，未知上游错误保留技术原文。
 
-完整 v0.3.18 镜像可通过后台「在线更新」升级至 v0.3.19，无需重新安装 NapCat；也可拉取新版完整镜像并保留原数据卷。
+完整 v0.3.18／v0.3.19 镜像可通过后台「在线更新」升级至 v0.3.20，无需重新安装 NapCat；也可拉取新版完整镜像并保留原数据卷。
 
 独立运行的机器人管理后台原型，不依赖 autMan 可执行文件或授权服务。当前版本覆盖
 系统管理、插件管理、本地开发及返利转链接口的第一阶段。界面根据 autMan 的管理工作流
@@ -30,7 +32,7 @@ node server.js
 
 适用于 Intel/AMD x86_64 飞牛设备。v0.3.18 起完整镜像内置 Linux QQ 和 NapCat，只启动一个小米粥容器。安装前确认 [Releases](https://github.com/najiuwanan511/xiaomizhou/releases) 中该版本已发布成功。
 
-在飞牛 Docker 应用的「Compose」中点击「新增项目」，项目名称填 `xiaomizhou`，将 [compose.image.yml](compose.image.yml) 内容粘贴到编辑框并启动。此配置固定使用 `ghcr.io/najiuwanan511/xiaomizhou:v0.3.19`，无需下载源码或单独安装 NapCat。NAS 需要能访问 GHCR。
+在飞牛 Docker 应用的「Compose」中点击「新增项目」，项目名称填 `xiaomizhou`，将 [compose.image.yml](compose.image.yml) 内容粘贴到编辑框并启动。此配置固定使用 `ghcr.io/najiuwanan511/xiaomizhou:v0.3.20`，无需下载源码或单独安装 NapCat。NAS 需要能访问 GHCR。
 
 启动后访问 `http://飞牛IP:8090`，首次创建管理员账号（密码至少 12 位）。进入「个人 QQ」，等待内核启动，使用手机 QQ 扫码确认后自动接通消息。
 

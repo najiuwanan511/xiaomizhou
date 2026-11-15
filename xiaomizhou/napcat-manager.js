@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import tls from 'node:tls';
+import net from 'node:net';
 import QRCode from 'qrcode';
 import { oneBotCall } from './qq-bridge.js';
 
@@ -165,4 +167,135 @@ export function createNapcatManager({ getConfig, getQqConfig, fetcher = fetch })
 
   const rememberAccount = userId => call(getConfig(), 'QQLogin/SetQuickLoginQQ', { uin: String(userId) });
   return { clear, status, refreshQr, connect, rememberAccount };
+}
+
+const notificationSecrets = ['pushplusToken', 'wecomKey', 'smtpPassword'];
+const mailbox = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}$/;
+export function parseQqNotificationConfig(input, old = {}) {
+  const config = { enabled: input.enabled === true, provider: input.provider || 'pushplus', delaySeconds: Number(input.delaySeconds ?? 60), recovery: input.recovery !== false };
+  if (!['pushplus', 'wecom', 'email'].includes(config.provider)) throw invalid('请选择有效的通知渠道');
+  if (!Number.isInteger(config.delaySeconds) || config.delaySeconds < 30 || config.delaySeconds > 3600) throw invalid('掉线等待时间应为 30–3600 秒');
+  for (const key of [...notificationSecrets, 'smtpHost', 'smtpUser', 'smtpFrom', 'smtpTo']) {
+    config[key] = input[key] === '********' && notificationSecrets.includes(key) ? old[key] || '' : String(input[key] ?? old[key] ?? '').trim();
+    if (config[key].length > 1000 || /[\r\n\0]/.test(config[key])) throw invalid('通知配置过长或包含无效字符');
+  }
+  config.smtpPort = Number(input.smtpPort ?? old.smtpPort ?? 465);
+  if (!Number.isInteger(config.smtpPort) || config.smtpPort < 1 || config.smtpPort > 65535) throw invalid('SMTP 端口无效');
+  if (config.enabled) {
+    if (config.provider === 'pushplus' && !/^[A-Za-z0-9_-]{10,200}$/.test(config.pushplusToken)) throw invalid('请填写 PushPlus Token');
+    if (config.provider === 'wecom' && !/^[A-Za-z0-9_-]{10,200}$/.test(config.wecomKey)) throw invalid('请填写企业微信机器人的 Webhook key');
+    if (config.provider === 'email' && (!/^[A-Za-z0-9.-]{1,253}$/.test(config.smtpHost) || !config.smtpUser || !config.smtpPassword || !mailbox.test(config.smtpFrom) || !mailbox.test(config.smtpTo))) throw invalid('请填写 SMTP 服务器、账号、授权码、发件人与收件人邮箱');
+  }
+  return config;
+}
+export function publicQqNotificationConfig(config) {
+  return { ...config, ...Object.fromEntries(notificationSecrets.map(key => [key, config[key] ? '********' : ''])) };
+}
+
+// Implicit TLS SMTP (normally port 465). Never send an authorization code over plaintext.
+export async function sendQqNotificationEmail(config, title, content, connect = tls.connect) {
+  config = parseQqNotificationConfig({ ...config, enabled: true, provider: 'email' });
+  const socket = connect({ host: config.smtpHost, port: config.smtpPort, servername: net.isIP(config.smtpHost) ? undefined : config.smtpHost, minVersion: 'TLSv1.2', rejectUnauthorized: true });
+  let buffer = '', pending, failed, size = 0;
+  const replies = [];
+  const abort = error => { failed = error; if (pending) { const waiting = pending; pending = null; waiting.reject(error); } };
+  socket.setEncoding('utf8');
+  socket.on('error', () => abort(new Error('SMTP 安全连接失败，请检查服务器、证书和端口')));
+  socket.on('close', () => abort(new Error('SMTP 连接已关闭')));
+  socket.on('data', chunk => {
+    size += chunk.length;
+    if (size > 65536) { abort(new Error('SMTP 响应过大')); socket.destroy(); return; }
+    buffer += chunk;
+    let end;
+    while ((end = buffer.indexOf('\r\n')) >= 0) {
+      const line = buffer.slice(0, end); buffer = buffer.slice(end + 2);
+      if (!/^\d{3}[- ]/.test(line)) { abort(new Error('SMTP 响应格式无效')); socket.destroy(); return; }
+      if (line[3] === ' ') {
+        const code = Number(line.slice(0, 3));
+        if (pending) { const waiting = pending; pending = null; waiting.resolve(code); }
+        else replies.push(code);
+      }
+    }
+  });
+  const read = () => failed ? Promise.reject(failed) : replies.length ? Promise.resolve(replies.shift()) : new Promise((resolve, reject) => { pending = { resolve, reject }; });
+  const command = async (text, codes, stage) => {
+    if (text != null) socket.write(text + '\r\n');
+    const code = await read();
+    if (!codes.includes(code)) throw new Error(`邮件发送失败：${stage}（SMTP ${code}）`);
+  };
+  const timer = setTimeout(() => { abort(new Error('邮件发送超时，请检查 SMTP 服务')); socket.destroy(); }, 20000);
+  try {
+    await command(null, [220], '服务器未就绪');
+    await command('EHLO xiaomizhou', [250], '握手失败');
+    await command('AUTH LOGIN', [334], '服务器不支持账号登录');
+    await command(Buffer.from(config.smtpUser).toString('base64'), [334], '账号验证失败');
+    await command(Buffer.from(config.smtpPassword).toString('base64'), [235], '授权码验证失败');
+    await command(`MAIL FROM:<${config.smtpFrom}>`, [250], '发件地址被拒绝');
+    await command(`RCPT TO:<${config.smtpTo}>`, [250, 251], '收件地址被拒绝');
+    await command('DATA', [354], '服务器拒绝邮件正文');
+    const titleCharacters = Array.from(title), encodedWords = [];
+    for (let i = 0; i < titleCharacters.length; i += 10) encodedWords.push(`=?UTF-8?B?${Buffer.from(titleCharacters.slice(i, i + 10).join('')).toString('base64')}?=`);
+    const body = Buffer.from(content).toString('base64').match(/.{1,76}/g)?.join('\r\n') || '';
+    const message = [`From: <${config.smtpFrom}>`, `To: <${config.smtpTo}>`, `Subject: ${encodedWords.join('\r\n ')}`, `Date: ${new Date().toUTCString()}`, `Message-ID: <${crypto.randomUUID()}@xiaomizhou.local>`, 'MIME-Version: 1.0', 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', body, '.'].join('\r\n');
+    await command(message, [250], '服务器未接受邮件');
+    socket.end('QUIT\r\n');
+  } finally { clearTimeout(timer); socket.destroy(); }
+}
+
+export async function sendQqNotification(config, title, content, { fetcher = fetch, email = sendQqNotificationEmail } = {}) {
+  config = parseQqNotificationConfig({ ...config, enabled: true });
+  if (config.provider === 'email') return email(config, title, content);
+  const url = config.provider === 'pushplus' ? 'https://www.pushplus.plus/send' : `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${encodeURIComponent(config.wecomKey)}`;
+  const payload = config.provider === 'pushplus' ? { token: config.pushplusToken, title, content, template: 'txt' } : { msgtype: 'text', text: { content: `${title}\n${content}` } };
+  let response;
+  try { response = await fetcher(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: AbortSignal.timeout(15000), redirect: 'error' }); }
+  catch { throw new Error('通知渠道连接失败或超时，请检查网络'); }
+  if (!response.ok) throw new Error(`通知渠道请求失败（HTTP ${response.status}）`);
+  const result = await response.json().catch(() => null);
+  const code = config.provider === 'pushplus' ? result?.code : result?.errcode;
+  if (code !== (config.provider === 'pushplus' ? 200 : 0)) throw new Error(`通知渠道拒绝请求（错误码：${typeof code === 'number' ? code : '响应格式无效'}），请检查令牌和接收设置`);
+}
+
+export function createQqOfflineNotifier({ getConfig, loadState = () => ({}), saveState = () => {}, send = sendQqNotification, log = () => {}, clock = Date.now }) {
+  let state = { armed: false, account: null, offlineSince: null, offlineNotified: false, attempts: 0, nextAttemptAt: 0, lastError: null, lastNotificationAt: null, ...loadState() };
+  let busy = false;
+  const persist = () => saveState({ ...state });
+  const status = () => ({ armed: state.armed, account: state.account, offlineSince: state.offlineSince, offlineNotified: state.offlineNotified, lastCheckedAt: state.lastCheckedAt || null, lastNotificationAt: state.lastNotificationAt, lastError: state.lastError, nextAttemptAt: state.nextAttemptAt || null });
+  async function tick(sample) {
+    if (busy || !getConfig().enabled) return;
+    busy = true;
+    try {
+      const config = getConfig(), time = clock();
+      state.lastCheckedAt = new Date(time).toISOString();
+      let kind;
+      if (sample.state === 'online') {
+        state.armed = true;
+        if (sample.account?.userId) state.account = { userId: String(sample.account.userId).slice(0, 40), nickname: String(sample.account.nickname || '').slice(0, 80) };
+        if (state.offlineNotified && config.recovery) kind = 'recovery';
+        else { state.offlineSince = null; state.offlineNotified = false; state.attempts = 0; state.nextAttemptAt = 0; state.lastError = null; }
+      } else if (state.armed && sample.state !== 'unconfigured') {
+        if (state.offlineSince == null) { state.offlineSince = time; state.nextAttemptAt = 0; }
+        if (!state.offlineNotified && time - state.offlineSince >= config.delaySeconds * 1000) kind = 'offline';
+      }
+      persist();
+      if (!kind || time < state.nextAttemptAt) return;
+      const title = kind === 'offline' ? '【小米粥】QQ 掉线或连接异常' : '【小米粥】QQ 已恢复上线';
+      const labels = { offline: 'QQ 已掉线', waiting: 'QQ 当前等待重新扫码', unreachable: '无法连接 NapCat 或消息接口', 'auth-error': 'NapCat 管理接口鉴权失败' };
+      const format = value => new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
+      const content = [`QQ：${state.account?.nickname || '个人 QQ'}（${state.account?.userId || '未知账号'}）`, `发现异常：${format(state.offlineSince)}`, `${kind === 'offline' ? '提醒' : '恢复'}时间：${format(time)}（北京时间）`, kind === 'offline' ? `状态：${labels[sample.state] || '连接异常'}${sample.error ? `\n原因：${String(sample.error).slice(0, 300)}` : ''}` : `本次异常持续约 ${Math.max(1, Math.round((time - state.offlineSince) / 60000))} 分钟`, kind === 'offline' ? '请打开小米粥「个人 QQ」查看状态，必要时重新扫码。' : 'QQ 已在线，请在小米粥确认消息收发状态。'].join('\n');
+      try {
+        await send(config, title, content);
+        state.lastNotificationAt = new Date(clock()).toISOString(); state.lastError = null; state.attempts = 0; state.nextAttemptAt = 0;
+        if (kind === 'offline') state.offlineNotified = true;
+        else { state.offlineNotified = false; state.offlineSince = null; }
+        log('info', `QQ ${kind === 'offline' ? '掉线' : '恢复'}通知已提交至${{ pushplus: 'PushPlus', wecom: '企业微信机器人', email: '邮件服务器' }[config.provider]}`);
+      } catch (error) {
+        state.attempts++; state.nextAttemptAt = clock() + Math.min(300000, 60000 * 2 ** Math.min(state.attempts - 1, 3));
+        state.lastError = error.message;
+        log('error', `QQ ${kind === 'offline' ? '掉线' : '恢复'}通知发送失败：${error.message}；将自动重试`);
+      }
+      persist();
+    } finally { busy = false; }
+  }
+  return { tick, status };
 }

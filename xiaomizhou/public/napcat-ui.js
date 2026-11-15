@@ -34,7 +34,7 @@ export function bindLogPanel({ id, api, escapeHtml, date, active, personal = fal
 }
 
 export async function renderNapcat({ api, shell, heading, icon, escapeHtml, date, toast, active, reload }) {
-  const [config, qq, settings] = await Promise.all([api('/napcat'), api('/qq'), api('/settings')]);
+  const [config, qq, settings, notificationConfig] = await Promise.all([api('/napcat'), api('/qq'), api('/settings'), api('/qq/notifications')]);
   if (!active()) return () => {};
   shell(`${heading('个人 QQ · NapCat', '扫码登录 QQ，查看在线状态并接通消息收发')}
     <div class="two-col napcat-panels">
@@ -66,6 +66,31 @@ export async function renderNapcat({ api, shell, heading, icon, escapeHtml, date
         <p class="help">「接通消息收发」会创建或更新小米粥专用的消息服务和回调，保留其他连接配置。无需再到 NapCat 页面复制回调地址。</p>
       </section>
     </div>
+    <section class="panel pad section" id="qq-notification-panel">
+      <div class="section-head"><h2>QQ 掉线提醒</h2><span class="pill off" id="qq-notification-state">未启用</span></div>
+      <p class="muted">通过独立渠道接收掉线与恢复通知，关闭网页后仍会在后台检测。首次扫码前不提醒，同一次掉线成功通知后不重复发送。</p>
+      <form id="qq-notification-form">
+        <div class="two-col"><div>
+          <div class="field"><label class="switch"><input type="checkbox" id="qq-notification-enabled" ${notificationConfig.enabled ? 'checked' : ''}> 启用 QQ 掉线提醒</label></div>
+          <div class="field"><label for="qq-notification-provider">通知渠道</label><select id="qq-notification-provider"><option value="pushplus">PushPlus（微信接收）</option><option value="wecom">企业微信机器人</option><option value="email">邮件（SMTP 安全连接）</option></select></div>
+          <div class="field"><label for="qq-notification-delay">持续离线多少秒后提醒</label><input id="qq-notification-delay" type="number" min="30" max="3600" step="1" value="${notificationConfig.delaySeconds || 60}"><small>默认 60 秒，每 15 秒检测一次，短暂断网不提醒。</small></div>
+          <div class="field"><label class="switch"><input type="checkbox" id="qq-notification-recovery" ${notificationConfig.recovery !== false ? 'checked' : ''}> 恢复上线后发送通知</label></div>
+        </div><div>
+          <div data-notification-provider="pushplus"><div class="field"><label for="qq-notification-pushplusToken">PushPlus Token</label><input id="qq-notification-pushplusToken" type="password" autocomplete="off" value="${escapeHtml(notificationConfig.pushplusToken || '')}"><small>在 PushPlus 获取 Token 并绑定微信接收账号。</small></div></div>
+          <div data-notification-provider="wecom" hidden><div class="field"><label for="qq-notification-wecomKey">企业微信机器人 Webhook key</label><input id="qq-notification-wecomKey" type="password" autocomplete="off" value="${escapeHtml(notificationConfig.wecomKey || '')}"><small>在企业微信群中添加机器人，填写 Webhook 地址中 key= 后面的内容。</small></div></div>
+          <div data-notification-provider="email" hidden>
+            <div class="two-col"><div class="field"><label for="qq-notification-smtpHost">SMTP 服务器</label><input id="qq-notification-smtpHost" value="${escapeHtml(notificationConfig.smtpHost || '')}" placeholder="smtp.qq.com" autocomplete="off"></div><div class="field"><label for="qq-notification-smtpPort">安全连接端口</label><input id="qq-notification-smtpPort" type="number" min="1" max="65535" value="${notificationConfig.smtpPort || 465}"></div></div>
+            <div class="field"><label for="qq-notification-smtpUser">SMTP 账号</label><input id="qq-notification-smtpUser" value="${escapeHtml(notificationConfig.smtpUser || '')}" autocomplete="off"></div>
+            <div class="field"><label for="qq-notification-smtpPassword">SMTP 授权码</label><input id="qq-notification-smtpPassword" type="password" value="${escapeHtml(notificationConfig.smtpPassword || '')}" autocomplete="off"><small>填写邮箱的 SMTP 授权码。使用 SSL/TLS 直连，通常为 465 端口。</small></div>
+            <div class="two-col"><div class="field"><label for="qq-notification-smtpFrom">发件邮箱</label><input id="qq-notification-smtpFrom" type="email" value="${escapeHtml(notificationConfig.smtpFrom || '')}"></div><div class="field"><label for="qq-notification-smtpTo">收件邮箱</label><input id="qq-notification-smtpTo" type="email" value="${escapeHtml(notificationConfig.smtpTo || '')}"></div></div>
+          </div>
+        </div></div>
+        <div class="row"><button class="btn primary" type="submit" id="qq-notification-save">保存提醒设置</button><button class="btn" type="button" id="qq-notification-test">发送测试通知</button></div>
+        <p id="qq-notification-result" class="muted" role="status">先保存配置，再发送测试通知并到接收渠道确认。</p>
+      </form>
+      <p id="qq-notification-status" class="muted" role="status"></p>
+      <p class="help">只检测个人 QQ；QQ 等待重新扫码、NapCat 服务不可达或鉴权异常也会计入持续异常。发送失败会自动重试。小米粥容器必须保持运行且能够访问通知渠道；整个 NAS 关机或断网时，无法即时向外发送通知。</p>
+    </section>
     <details class="panel pad section" id="qq-manual" ${config.bundled ? 'hidden' : ''}><summary>手动接入与排错</summary><div class="two-col section">
       <div><div class="field"><label for="qq-endpoint">HTTP API 地址</label><input id="qq-endpoint" value="${escapeHtml(qq.endpoint)}" placeholder="http://napcat:3000"></div><div class="field"><label for="qq-token">消息 API Access Token</label><input id="qq-token" type="password" autocomplete="off" value="${escapeHtml(qq.accessToken)}"></div><div class="field"><label class="switch"><input id="qq-enabled" type="checkbox" ${qq.enabled ? 'checked' : ''}> 启用消息接收</label></div><div class="row"><button class="btn" id="qq-save">保存手动配置</button><button class="btn" id="qq-test">测试消息连接</button></div><p id="qq-result" class="muted" role="status">${escapeHtml(qq.lastError || '已有 NapCat 消息服务可以在此手动接入')}</p></div>
       <div><div class="field"><label for="qq-callback">HTTP POST 回调地址</label><input id="qq-callback" class="mono" readonly value="${escapeHtml(`${config.callbackBaseUrl || location.origin}/api/qq/events?token=${settings.webhookToken}`)}"><small>包含接入令牌，请妥善保管。自动接通时会写入 NapCat。</small></div><p class="help">手动配置不影响已有转发规则。群转发目标填写 group:群号，私聊目标填写 private:QQ号。发送 time 或“时间”可测试回复。</p></div>
@@ -85,12 +110,58 @@ export async function renderNapcat({ api, shell, heading, icon, escapeHtml, date
   const current = () => alive && active() && panel.isConnected;
   const notice = message => { element('napcat-notice').textContent = message; element('napcat-notice').hidden = !message; };
   const showError = message => { element('napcat-error').textContent = message || ''; element('napcat-error').hidden = !message; };
+  let savedNotifications = notificationConfig;
+  let notificationDirty = false, notificationBusy = false;
+  const notificationFields = ['enabled', 'provider', 'delay', 'recovery', 'pushplusToken', 'wecomKey', 'smtpHost', 'smtpPort', 'smtpUser', 'smtpPassword', 'smtpFrom', 'smtpTo'];
+  function notificationButtons() {
+    element('qq-notification-save').disabled = notificationBusy;
+    element('qq-notification-test').disabled = notificationBusy || notificationDirty;
+  }
+  function notificationStatus(status = savedNotifications.status || {}) {
+    const badge = element('qq-notification-state');
+    badge.textContent = savedNotifications.enabled ? status.lastError ? '通知失败' : status.armed ? '监测中' : '等待 QQ 上线' : '未启用';
+    badge.className = `pill ${!savedNotifications.enabled ? 'off' : status.lastError ? 'warn' : ''}`;
+    element('qq-notification-status').textContent = !savedNotifications.enabled ? '提醒尚未启用。可以先保存渠道配置并发送测试通知。' : `${status.armed ? status.offlineSince ? `发现持续异常：${date(status.offlineSince)}${status.offlineNotified ? '，掉线通知已提交' : '，正在等待提醒或重试'}` : 'QQ 监测已就绪' : '等待首次检测到 QQ 在线，首次扫码前不会发掉线通知'}${status.lastCheckedAt ? `；最近检测：${date(status.lastCheckedAt)}` : ''}${status.lastNotificationAt ? `；最近通知：${date(status.lastNotificationAt)}` : ''}${status.lastError ? `；发送失败：${status.lastError}` : ''}`;
+  }
+  const notificationForm = element('qq-notification-form');
+  element('qq-notification-provider').value = notificationConfig.provider || 'pushplus';
+  function notificationProvider() {
+    document.querySelectorAll('[data-notification-provider]').forEach(group => {
+      group.hidden = group.dataset.notificationProvider !== element('qq-notification-provider').value;
+      group.querySelectorAll('input').forEach(input => { input.disabled = group.hidden; });
+    });
+  }
+  notificationForm.oninput = () => { notificationDirty = true; element('qq-notification-result').textContent = '设置有未保存的修改，请先保存后再测试。'; notificationButtons(); };
+  notificationForm.onchange = () => { notificationForm.oninput(); notificationProvider(); };
+  notificationForm.onsubmit = async event => {
+    event.preventDefault(); if (notificationBusy) return;
+    notificationBusy = true; notificationButtons();
+    const input = Object.fromEntries(notificationFields.map(key => [key === 'delay' ? 'delaySeconds' : key, ['enabled', 'recovery'].includes(key) ? element(`qq-notification-${key}`).checked : element(`qq-notification-${key}`).value]));
+    try {
+      const saved = await api('/qq/notifications', { method: 'PUT', body: input });
+      if (!current()) return;
+      savedNotifications = saved; notificationDirty = false;
+      for (const key of ['pushplusToken', 'wecomKey', 'smtpPassword']) element(`qq-notification-${key}`).value = saved[key];
+      element('qq-notification-result').textContent = '提醒设置已保存。请发送测试通知，并到接收渠道确认。';
+      notificationStatus(saved.status);
+    } catch (error) { if (current()) element('qq-notification-result').textContent = `保存失败：${error.message}`; }
+    finally { if (current()) { notificationBusy = false; notificationButtons(); } }
+  };
+  element('qq-notification-test').onclick = async () => {
+    if (notificationBusy || notificationDirty) return;
+    notificationBusy = true; notificationButtons(); element('qq-notification-result').textContent = '正在发送测试通知…';
+    try { const result = await api('/qq/notifications/test', { method: 'POST' }); if (current()) element('qq-notification-result').textContent = result.message; }
+    catch (error) { if (current()) element('qq-notification-result').textContent = `测试失败：${error.message}`; }
+    finally { if (current()) { notificationBusy = false; notificationButtons(); } }
+  };
+  notificationProvider(); notificationStatus();
   function buttons() {
     element('napcat-save').disabled = busy;
     element('napcat-refresh').disabled = busy || dirty || !latest?.reachable || latest.state !== 'waiting';
     element('napcat-connect').disabled = busy || dirty || latest?.state !== 'online';
   }
   function display(data) {
+    if (data.notificationStatus) notificationStatus(data.notificationStatus);
     latest = data;
     if (!dirty) element('napcat-config-status').textContent = '当前显示的是已保存配置';
     const labels = { unconfigured: '待配置', online: 'QQ 在线', offline: 'QQ 已掉线', waiting: '等待扫码', 'auth-error': '鉴权失败', unreachable: '服务不可达' };
