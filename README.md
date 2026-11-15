@@ -76,12 +76,12 @@ volumes:
 源码安装：在飞牛 SSH 中执行以下命令，停止并移除容器及其本地构建镜像：
 
 ```sh
-cd "$HOME/xiaomizhou/xiaomizhou"
-docker compose down --rmi local
+cd "$HOME/xiaomizhou-napcat/xiaomizhou"
+docker compose -f compose.bundled.yml down --rmi local
 ```
 
 此命令保留源码和 `data/`，以后可以重新安装且原配置仍在。需要彻底删除时，先备份
-`$HOME/xiaomizhou/xiaomizhou/data/`，再通过飞牛文件管理器删除 `$HOME/xiaomizhou/`。
+`$HOME/xiaomizhou-napcat/xiaomizhou/data/`，再通过飞牛文件管理器删除 `$HOME/xiaomizhou-napcat/`。
 
 ## 本地开发
 

@@ -40,7 +40,7 @@ if (!fs.existsSync(file) || fs.statSync(file).size !== input.size || await diges
 if (process.argv.includes('--download-only')) { console.log(file); process.exit(0); }
 const run = (command, args) => {
   const result = spawnSync(command, args, { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
-  if (result.error || result.status !== 0) throw new Error(`${command} failed; install Docker and tar before building`);
+  if (result.error || result.status !== 0) throw new Error(`${command} ${args[0]} failed: ${result.error?.message || result.stderr?.trim() || 'unknown error'}`);
   return result.stdout;
 };
 const manifests = JSON.parse(run('tar', ['-xOf', file, 'manifest.json']));
@@ -51,5 +51,9 @@ const config = run('tar', ['-xOf', file, configName]);
 const imageId = `sha256:${crypto.createHash('sha256').update(config).digest('hex')}`;
 const tag = `xiaomizhou/napcat-runtime:${lock.version}-${arch}`;
 run('docker', ['load', '--input', file]);
-run('docker', ['tag', imageId, tag]);
+// A Docker daemon using the containerd image store may expose the OCI manifest
+// digest instead of its config digest as the image ID. Prefer the archive's tag.
+const sourceTag = manifests[0].RepoTags?.[0];
+if (sourceTag && !/^[a-zA-Z0-9][a-zA-Z0-9_./:@-]*$/.test(sourceTag)) throw new Error('Invalid archived image tag');
+run('docker', ['tag', sourceTag || imageId, tag]);
 console.log(tag);

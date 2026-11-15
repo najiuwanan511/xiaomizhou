@@ -39,7 +39,10 @@ jobs:
             -t "$image:$GITHUB_REF_NAME" -t "$image:latest" ./xiaomizhou
           docker run -d --name xiaomizhou-qq-smoke --shm-size=256m -p 127.0.0.1:18090:8090 "$image:$GITHUB_REF_NAME"
           trap 'docker rm -fv xiaomizhou-qq-smoke >/dev/null 2>&1 || true' EXIT
-          node xiaomizhou/scripts/smoke-bundled.js
+          if ! node xiaomizhou/scripts/smoke-bundled.js; then
+            node xiaomizhou/scripts/diagnose-bundled.js
+            exit 1
+          fi
           docker push "$image:$GITHUB_REF_NAME"
           docker push "$image:latest"
       - name: Publish GitHub Release
