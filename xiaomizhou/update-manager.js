@@ -4,9 +4,9 @@ import crypto from 'node:crypto';
 
 export const releaseRepo = 'najiuwanan511/xiaomizhou';
 export const runtimeFiles = [
-  'package.json', 'server.js', 'plugin-runner.js', 'qq-bridge.js',
+  'package.json', 'server.js', 'plugin-runner.js', 'qq-bridge.js', 'napcat-manager.js', 'bundled-runtime.js', 'napcat-updater.js', 'napcat-runtime.lock.json',
   'qqbot-bridge.js', 'wecom-bridge.js', 'rebate-automation.js', 'ai-brain.js',
-  'update-manager.js', 'public/index.html', 'public/app.js', 'public/style.css',
+  'update-manager.js', 'public/index.html', 'public/app.js', 'public/napcat-ui.js', 'public/style.css',
   'public/lucide.min.js', 'public/LUCIDE-LICENSE.txt'
 ];
 const maxBytes = 5 * 1024 * 1024;

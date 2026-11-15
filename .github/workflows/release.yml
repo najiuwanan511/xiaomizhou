@@ -21,11 +21,19 @@ jobs:
       - name: Build and publish container image
         env:
           GH_TOKEN: ${{ github.token }}
+          NAPCAT_BASE_IMAGE: ${{ vars.NAPCAT_BASE_IMAGE }}
         run: |
+          if [ -z "$NAPCAT_BASE_IMAGE" ]; then
+            NAPCAT_BASE_IMAGE="$(node xiaomizhou/scripts/prepare-napcat-image.js)"
+          fi
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker build --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+          docker build -f ./xiaomizhou/Dockerfile.bundled --build-arg "NAPCAT_BASE_IMAGE=$NAPCAT_BASE_IMAGE" \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
             -t "$image:$GITHUB_REF_NAME" -t "$image:latest" ./xiaomizhou
+          docker run -d --name xiaomizhou-qq-smoke --shm-size=256m -p 127.0.0.1:18090:8090 "$image:$GITHUB_REF_NAME"
+          trap 'docker rm -fv xiaomizhou-qq-smoke >/dev/null 2>&1 || true' EXIT
+          node xiaomizhou/scripts/smoke-bundled.js
           docker push "$image:$GITHUB_REF_NAME"
           docker push "$image:latest"
       - name: Publish GitHub Release

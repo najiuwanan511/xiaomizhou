@@ -1,0 +1,23 @@
+# BUILDERS: create ONE xiaomizhou image containing both full runtimes.
+# INSTALLERS: use compose.image.yml with the published resulting image.
+services:
+  xiaomizhou:
+    build:
+      context: .
+      dockerfile: Dockerfile.bundled
+      args:
+        NAPCAT_BASE_IMAGE: ${NAPCAT_BASE_IMAGE:-xiaomizhou/napcat-runtime:4.18.42-amd64}
+    container_name: xiaomizhou
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    environment:
+      TZ: Asia/Shanghai
+      PORT: "8090"
+      DATA_DIR: /app/data
+    volumes:
+      - ./data:/app/data
+    shm_size: 256mb
+    stop_grace_period: 15s
+    security_opt:
+      - no-new-privileges:true

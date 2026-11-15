@@ -1,0 +1,50 @@
+# The builder supplies a verified NapCat Shell + Linux QQ image. End users only
+# install the resulting xiaomizhou image; this is never a second running service.
+ARG NAPCAT_BASE_IMAGE
+FROM ${NAPCAT_BASE_IMAGE} AS qq-runtime
+USER root
+ARG NAPCAT_DIST_DIR=/app/napcat
+ARG QQ_INSTALL_DIR=/opt/QQ
+RUN if [ ! -f "$NAPCAT_DIST_DIR/napcat.mjs" ] && [ -f /app/NapCat.Shell.zip ]; then \
+      mkdir -p "$NAPCAT_DIST_DIR" && unzip -q /app/NapCat.Shell.zip -d "$NAPCAT_DIST_DIR"; fi
+RUN test -f "$NAPCAT_DIST_DIR/napcat.mjs" && test -d "$NAPCAT_DIST_DIR/native" \
+    && test -f "$NAPCAT_DIST_DIR/node_modules/express/package.json" \
+    && test -f "$NAPCAT_DIST_DIR/node_modules/ws/package.json" \
+    && test -f "$QQ_INSTALL_DIR/qq" \
+    && test -f "$QQ_INSTALL_DIR/resources/app/wrapper.node" \
+    && mkdir -p /xiaomizhou-bundle/napcat /xiaomizhou-bundle/QQ \
+    && tar -C "$NAPCAT_DIST_DIR" --exclude='./config' --exclude='./cache' --exclude='./logs' -cf /tmp/napcat-runtime.tar . \
+    && tar -xf /tmp/napcat-runtime.tar -C /xiaomizhou-bundle/napcat \
+    && cp -a "$QQ_INSTALL_DIR/." /xiaomizhou-bundle/QQ/
+RUN mkdir -p /xiaomizhou-bundle/napcat/defaults \
+    && if [ -f "$NAPCAT_DIST_DIR/config/napcat.json" ]; then cp "$NAPCAT_DIST_DIR/config/napcat.json" /xiaomizhou-bundle/napcat/defaults/napcat.json; fi
+
+FROM node:24-bookworm-slim AS dependencies
+WORKDIR /build
+COPY package.json pnpm-lock.yaml ./
+RUN npm install -g pnpm@11.25.0 && pnpm install --frozen-lockfile --prod
+
+FROM node:24-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    xvfb xauth dbus-x11 ca-certificates libgtk-3-0 libnss3 libgbm1 libasound2 \
+    libatk-bridge2.0-0 libxss1 libx11-xcb1 libxcb-dri3-0 libdrm2 libxshmfence1 \
+    libnotify4 libsecret-1-0 libxkbcommon0 libgl1 libegl1 libopengl0 fonts-noto-cjk ffmpeg tini \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=qq-runtime /xiaomizhou-bundle/QQ /opt/QQ
+COPY --from=qq-runtime /xiaomizhou-bundle/napcat /opt/xiaomizhou-napcat
+COPY scripts/qq-bootstrap.cjs /opt/QQ/resources/app/xiaomizhou-bootstrap.cjs
+# Change QQ's entry only. Do not edit or expose a modified NapCat distribution.
+RUN node -e "const fs=require('fs');const p='/opt/QQ/resources/app/package.json';const v=JSON.parse(fs.readFileSync(p));v.main='./xiaomizhou-bootstrap.cjs';fs.writeFileSync(p,JSON.stringify(v))" \
+    && ldd /opt/QQ/qq > /tmp/qq-libraries.txt \
+    && ! grep -q 'not found' /tmp/qq-libraries.txt
+WORKDIR /opt/xiaomizhou
+COPY --from=dependencies /build/node_modules ./node_modules
+COPY package.json launcher.js bundled-runtime.js napcat-updater.js napcat-runtime.lock.json server.js plugin-runner.js qq-bridge.js napcat-manager.js qqbot-bridge.js wecom-bridge.js rebate-automation.js ai-brain.js update-manager.js ./
+COPY public ./public
+COPY third-party /usr/share/doc/xiaomizhou/third-party
+RUN node -e "const fs=require('fs');const lock=require('./napcat-runtime.lock.json');const qq=require('/opt/QQ/resources/app/package.json');if(qq.version!==lock.qqVersion||!fs.readFileSync('/opt/xiaomizhou-napcat/napcat.mjs','utf8').includes(JSON.stringify(lock.version)))throw Error('Runtime version does not match lock')"
+ENV PORT=8090 DATA_DIR=/app/data NAPCAT_BUNDLED=1
+EXPOSE 8090
+VOLUME /app/data
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["node", "launcher.js"]

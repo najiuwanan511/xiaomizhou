@@ -4,6 +4,8 @@
 
 ## NapCat 群转发
 
+v0.3.18 开发中的完整镜像将 QQ、NapCat Shell 内核及原生库一起打进小米粥：一个容器，后台直接扫码，内部自动配置消息收发。已找到并校验 NapCat 4.18.42 + Linux QQ 3.2.34 完整归档，并加入 NapCat 在线更新、失败自动回滚和手动回滚。尚未完成 Linux/Docker 真实构建与扫码验收，尚未发布完整镜像，当前 `latest` 不包含这些未发布修改。构建与验证步骤见 [完整内核打包说明](xiaomizhou/docs/napcat-integrated.md)。
+
 v0.3.15 起支持转发原消息文字、链接、图片和图文，并把 QQ 合并聊天记录拆成普通消息，
 由当前登录 QQ 逐条发送。转发规则提供原图开关、拆分开关和发送间隔；队列支持去重与自动重试。
 接入步骤、群号填写和排错见 [NapCat 群转发教程](xiaomizhou/docs/napcat-forwarding.md)。
@@ -35,6 +37,8 @@ services:
       DATA_DIR: /app/data
     volumes:
       - xiaomizhou-data:/app/data
+    shm_size: 256mb
+    stop_grace_period: 15s
     security_opt:
       - no-new-privileges:true
 

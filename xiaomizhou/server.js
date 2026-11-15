@@ -12,12 +12,27 @@ import { createWecomBridge, wecomCallback, wecomDestination, wecomEvent } from '
 import { applyRebates, convertAffiliate, rebateConfigured, defaultRebateTemplate, formatRebate, imageUrl, normalizeShareText, productUrls, validateRebateTemplate } from './rebate-automation.js';
 import { aiConfig, createAiSessions, generateAiReply, normalizeAiConfig, parseAiConfigRequest } from './ai-brain.js';
 import { checkUpdate, installUpdate } from './update-manager.js';
+import { createNapcatManager, parseNapcatConfig } from './napcat-manager.js';
+import { bundledRuntimeStatus } from './bundled-runtime.js';
+import { readNapcatUpdateStatus } from './napcat-updater.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.DATA_DIR || path.join(root, 'data');
 const port = Number(process.env.PORT || 8090);
 const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
 let installingUpdate = false;
+const napcatRequests = new Map();
+process.on('message', message => {
+  if (message?.type === 'napcat-update-ack') napcatRequests.get(message.id)?.(message.accepted);
+});
+async function requestNapcatUpdate(action, version) {
+  const id = crypto.randomUUID();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { napcatRequests.delete(id); reject(Object.assign(new Error('内核启动器未响应，请重启容器'), { status: 503 })); }, 5000);
+    napcatRequests.set(id, accepted => { clearTimeout(timer); napcatRequests.delete(id); resolve(accepted); });
+    process.send({ type: 'napcat-update', id, action, version });
+  });
+}
 fs.mkdirSync(dataDir, { recursive: true });
 const db = new DatabaseSync(path.join(dataDir, 'ownman.db'));
 db.exec(`
@@ -149,9 +164,13 @@ async function rawBody(req) {
   }
   return text;
 }
-function authorized(req) {
+function sessionTokenHash(req) {
   const token = /(?:^|;\s*)ownman_session=([^;]+)/.exec(req.headers.cookie || '')?.[1];
-  return token && q.session.get(crypto.createHash('sha256').update(token).digest('hex'), Date.now());
+  return token && crypto.createHash('sha256').update(token).digest('hex');
+}
+function authorized(req) {
+  const tokenHash = sessionTokenHash(req);
+  return tokenHash && q.session.get(tokenHash, Date.now());
 }
 function passwordHash(password, salt) { return crypto.scryptSync(password, salt, 64).toString('hex'); }
 function validToken(provided) {
@@ -208,13 +227,54 @@ function listRules() {
   return q.forwardRules.all().map(rule => ({ id: rule.id, sourceChannel: rule.source_channel, sourceChatId: rule.source_chat_id, targetChannel: rule.target_channel, target: rule.target, mode: rule.mode, enabled: !!rule.enabled, includeImages: !!rule.include_images, splitForward: !!rule.split_forward, sendInterval: rule.send_interval, contentRules: validateForwardContent(JSON.parse(rule.content_rules || '{}')) }));
 }
 function qqConfig() {
-  try { return JSON.parse(getSetting('qq.config', '{}')); }
+  try {
+    const saved = JSON.parse(getSetting('qq.config', '{}'));
+    return process.env.NAPCAT_BUNDLED === '1' ? { ...saved, endpoint: process.env.NAPCAT_ONEBOT_URL } : saved;
+  }
   catch { return {}; }
 }
 function publicQqConfig() {
   const config = qqConfig();
   return { enabled: !!config.enabled, endpoint: config.endpoint || '', accessToken: config.accessToken ? '********' : '', ...qqStatus };
 }
+function napcatConfig() {
+  let saved = {};
+  try { saved = JSON.parse(getSetting('napcat.config', '{}')); } catch { /* use deployment defaults */ }
+  const defaults = {
+    webuiUrl: process.env.NAPCAT_WEBUI_URL || '',
+    webuiToken: process.env.NAPCAT_WEBUI_TOKEN || '',
+    onebotUrl: process.env.NAPCAT_ONEBOT_URL || qqConfig().endpoint || '',
+    callbackBaseUrl: process.env.NAPCAT_CALLBACK_BASE_URL || ''
+  };
+  return process.env.NAPCAT_BUNDLED === '1' ? { ...defaults, bundled: true } : { ...defaults, ...saved };
+}
+function publicNapcatConfig() {
+  const config = napcatConfig();
+  if (process.env.NAPCAT_BUNDLED === '1') return { bundled: true, webuiUrl: '', webuiToken: '', onebotUrl: '', callbackBaseUrl: '' };
+  return { bundled: false, ...config, webuiToken: config.webuiToken ? '********' : '' };
+}
+const napcatManager = createNapcatManager({ getConfig: napcatConfig, getQqConfig: qqConfig });
+let napcatAutoBusy = false;
+let napcatAutoSynced = false;
+let napcatAutoError = null;
+async function syncBundledQq() {
+  if (process.env.NAPCAT_BUNDLED !== '1' || napcatAutoBusy || !getSetting('webhookToken')) return;
+  napcatAutoBusy = true;
+  try {
+    const status = await napcatManager.status();
+    if (status.state !== 'online') { napcatAutoSynced = false; return; }
+    if (!napcatAutoSynced || !status.messageConnected) {
+      await napcatManager.connect(getSetting('webhookToken'), config => putSetting.run('qq.config', JSON.stringify(config)));
+      if (status.account?.userId) await napcatManager.rememberAccount(status.account.userId);
+      napcatAutoSynced = true;
+    }
+    napcatAutoError = null;
+  } catch (error) {
+    if (napcatAutoError !== error.message) log('error', 'napcat', error.message);
+    napcatAutoError = error.message;
+  } finally { napcatAutoBusy = false; }
+}
+if (process.env.NAPCAT_BUNDLED === '1') setInterval(syncBundledQq, 5000).unref();
 function qqBotConfig() {
   try { return JSON.parse(getSetting('qqbot.config', '{}')); }
   catch { return {}; }
@@ -421,10 +481,22 @@ const server = http.createServer(async (req, res) => {
       const input = await body(req);
       if (String(input.password || '').length < 12 || !String(input.username || '').trim()) return fail(res, 400, 'Username and password of at least 12 characters required');
       const salt = crypto.randomBytes(16).toString('hex');
-      const result = db.prepare('INSERT INTO users(username,salt,hash) VALUES(?,?,?)').run(String(input.username).trim(), salt, passwordHash(String(input.password), salt));
-      putSetting.run('webhookToken', crypto.randomBytes(24).toString('hex'));
-      log('info', 'system', 'Administrator account created');
-      return session(res, Number(result.lastInsertRowid));
+      let userId;
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        // Another request may have initialized the database while this body
+        // was arriving. Recheck under the same lock as all initialization writes.
+        if (q.users.get().count) {
+          db.exec('ROLLBACK');
+          return fail(res, 409, 'Already initialized');
+        }
+        const result = db.prepare('INSERT INTO users(username,salt,hash) VALUES(?,?,?)').run(String(input.username).trim(), salt, passwordHash(String(input.password), salt));
+        userId = Number(result.lastInsertRowid);
+        putSetting.run('webhookToken', crypto.randomBytes(24).toString('hex'));
+        log('info', 'system', 'Administrator account created');
+        db.exec('COMMIT');
+      } catch (error) { db.exec('ROLLBACK'); throw error; }
+      return session(res, userId);
     }
     if (req.method === 'POST' && pathname === '/api/login') {
       const input = await body(req); const user = q.user.get(String(input.username || ''));
@@ -480,7 +552,10 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (!authorized(req)) return fail(res, 401, 'Sign in required');
-    if (req.method === 'POST' && pathname === '/api/logout') return json(res, 200, { ok: true }, { 'Set-Cookie': 'ownman_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' });
+    if (req.method === 'POST' && pathname === '/api/logout') {
+      db.prepare('DELETE FROM sessions WHERE token_hash=?').run(sessionTokenHash(req));
+      return json(res, 200, { ok: true }, { 'Set-Cookie': 'ownman_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' });
+    }
     if (req.method === 'GET' && pathname === '/api/updates') return json(res, 200, { currentVersion: version, managed: typeof process.send === 'function' && process.env.XIAOMIZHOU_MANAGED === '1', installing: installingUpdate });
     if (req.method === 'POST' && pathname === '/api/updates/check') return json(res, 200, await checkUpdate(version));
     if (req.method === 'POST' && pathname === '/api/updates/install') {
@@ -565,8 +640,45 @@ const server = http.createServer(async (req, res) => {
       log('info', 'ai', 'Conversation history cleared');
       return json(res, 200, { ok: true });
     }
+    if (req.method === 'GET' && pathname === '/api/napcat') return json(res, 200, publicNapcatConfig());
+    if (pathname.startsWith('/api/napcat/updates')) {
+      if (process.env.NAPCAT_BUNDLED !== '1' || !process.send) return fail(res, 409, '在线更新需要完整内置 QQ 镜像');
+      if (req.method === 'GET' && pathname === '/api/napcat/updates') return json(res, 200, readNapcatUpdateStatus(dataDir));
+      const action = /^\/api\/napcat\/updates\/(check|install|rollback)$/.exec(pathname)?.[1];
+      if (req.method === 'POST' && action) {
+        const input = await body(req);
+        const accepted = await requestNapcatUpdate(action, String(input.version || ''));
+        if (!accepted) return fail(res, 409, '已有内核更新任务正在进行');
+        return json(res, 202, { accepted: true });
+      }
+    }
+    if (req.method === 'PUT' && pathname === '/api/napcat') {
+      if (process.env.NAPCAT_BUNDLED === '1') return fail(res, 409, '内置 QQ 由小米粥自动管理，无需填写连接配置');
+      const config = parseNapcatConfig(await body(req), napcatConfig());
+      putSetting.run('napcat.config', JSON.stringify(config));
+      napcatManager.clear();
+      log('info', 'napcat', 'NapCat management configuration saved');
+      return json(res, 200, publicNapcatConfig());
+    }
+    if (req.method === 'GET' && pathname === '/api/napcat/status') return json(res, 200, { ...await napcatManager.status(), lastEventAt: qqStatus.lastEventAt, autoError: napcatAutoError, runtime: process.env.NAPCAT_BUNDLED === '1' ? bundledRuntimeStatus(process.env.NAPCAT_STATUS_FILE) : null });
+    if (req.method === 'POST' && pathname === '/api/napcat/restart') {
+      if (process.env.NAPCAT_BUNDLED !== '1' || !process.send) return fail(res, 409, '当前不是内置 QQ 镜像');
+      if (['checking', 'downloading', 'extracting', 'switching'].includes(readNapcatUpdateStatus(dataDir).state)) return fail(res, 409, '已有内核更新任务正在进行');
+      process.send({ type: 'napcat-restart' });
+      return json(res, 202, { ok: true });
+    }
+    if (req.method === 'POST' && pathname === '/api/napcat/qrcode/refresh') return json(res, 200, await napcatManager.refreshQr());
+    if (req.method === 'POST' && pathname === '/api/napcat/connect') {
+      const result = await napcatManager.connect(getSetting('webhookToken'), config => {
+        putSetting.run('qq.config', JSON.stringify(config));
+        qqStatus.lastError = null;
+      });
+      log('info', 'napcat', 'NapCat message API and callback configured');
+      return json(res, 200, result);
+    }
     if (req.method === 'GET' && pathname === '/api/qq') return json(res, 200, publicQqConfig());
     if (req.method === 'PUT' && pathname === '/api/qq') {
+      if (process.env.NAPCAT_BUNDLED === '1') return fail(res, 409, '内置 QQ 的消息配置由小米粥自动管理');
       const input = await body(req);
       const old = qqConfig();
       const endpoint = String(input.endpoint || '').trim();

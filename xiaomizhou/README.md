@@ -128,6 +128,8 @@ curl -X POST 'http://localhost:8090/api/events' \
 
 ## 个人 QQ 接入
 
+完整内置模式直接在「个人 QQ」扫码，并可检查、升级和回滚 NapCat；构建与功能状态见 [内置内核说明](docs/napcat-integrated.md)。以下为已有外部 NapCat 的手动接入方式。
+
 1. 在 NapCat 中启用 OneBot 11 正向 HTTP 服务，并设置 Access Token。将 HTTP API 地址
    （例如 `http://飞牛局域网IP:3000`）和 Access Token 填入 xiaomizhou 的「个人 QQ」页面。
 2. 在 NapCat 中配置 HTTP POST 消息上报地址，使用「个人 QQ」页面显示的完整回调 URL。

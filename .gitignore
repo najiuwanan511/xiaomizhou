@@ -4,3 +4,4 @@
 /xiaomizhou/data/
 /xiaomizhou/node_modules/
 /xiaomizhou/release/
+/xiaomizhou/.env.build

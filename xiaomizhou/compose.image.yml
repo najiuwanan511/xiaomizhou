@@ -11,6 +11,8 @@ services:
       DATA_DIR: /app/data
     volumes:
       - xiaomizhou-data:/app/data
+    shm_size: 256mb
+    stop_grace_period: 15s
     security_opt:
       - no-new-privileges:true
 

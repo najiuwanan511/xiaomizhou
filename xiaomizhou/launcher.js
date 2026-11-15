@@ -3,6 +3,9 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { compareVersions } from './update-manager.js';
+import { prepareBundledRuntime, createRuntimeSupervisor } from './bundled-runtime.js';
+import { createNapcatUpdater } from './napcat-updater.js';
+import { createNapcatManager } from './napcat-manager.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.DATA_DIR || path.join(root, 'data');
@@ -10,6 +13,37 @@ const releases = path.join(dataDir, 'releases');
 const pointer = path.join(releases, 'current.json');
 const baseVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
 const port = Number(process.env.PORT || 8090);
+let qqRuntime = null;
+let napcatUpdater = null;
+let shuttingDown = false;
+if (process.env.NAPCAT_BUNDLED === '1') {
+  if (process.platform !== 'linux') throw new Error('完整内置 QQ 镜像需要 Linux 运行环境');
+  napcatUpdater = createNapcatUpdater({
+    dataDir,
+    stopRuntime: async () => { await qqRuntime?.stop(); },
+    startRuntime: async runtimeDir => {
+      if (shuttingDown) throw new Error('容器正在停止');
+      const runtime = prepareBundledRuntime({ dataDir, appPort: port, runtimeDir });
+      Object.assign(process.env, runtime.env);
+      qqRuntime = createRuntimeSupervisor(runtime);
+      qqRuntime.start();
+    },
+    healthy: async () => {
+      const manager = createNapcatManager({ getConfig: () => ({ webuiUrl: process.env.NAPCAT_WEBUI_URL, webuiToken: process.env.NAPCAT_WEBUI_TOKEN }), getQqConfig: () => ({}) });
+      const deadline = Date.now() + 90000;
+      while (!shuttingDown && Date.now() < deadline) {
+        const status = await manager.status();
+        if (status.reachable && (status.state === 'online' || status.qrCode)) return true;
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+      return false;
+    }
+  });
+  const runtime = prepareBundledRuntime({ dataDir, appPort: port, runtimeDir: napcatUpdater.selectedDirectory() });
+  Object.assign(process.env, runtime.env);
+  qqRuntime = createRuntimeSupervisor(runtime);
+  qqRuntime.start();
+}
 
 function selected() {
   try {
@@ -44,11 +78,22 @@ async function launch() {
     cwd: dir, stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
     env: { ...process.env, XIAOMIZHOU_MANAGED: '1' }
   });
-  const onSignal = signal => child.kill(signal);
+  const onSignal = signal => { shuttingDown = true; child.kill(signal); };
   process.once('SIGTERM', onSignal);
   process.once('SIGINT', onSignal);
   let restart = false;
   child.on('message', message => { if (message?.type === 'update-installed') restart = true; });
+  child.on('message', message => {
+    if (message?.type === 'napcat-restart' && qqRuntime && !napcatUpdater?.isBusy()) {
+      // Re-read saved quick-login account and the selected runtime on restart.
+      void napcatUpdater.run('restart').catch(() => console.error('QQ core restart failed'));
+    }
+    if (message?.type === 'napcat-update' && napcatUpdater) {
+      const accepted = !napcatUpdater.isBusy();
+      if (child.connected) child.send({ type: 'napcat-update-ack', id: message.id, accepted });
+      if (accepted) void napcatUpdater.run(message.action, message.version).catch(() => console.error('NapCat update failed'));
+    }
+  });
   const exit = new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal })));
   if (state?.pending) {
     if (await healthy(child)) {
@@ -68,7 +113,8 @@ async function launch() {
   process.removeListener('SIGTERM', onSignal);
   process.removeListener('SIGINT', onSignal);
   if (restart) return launch();
+  await qqRuntime?.stop();
   process.exit(result.code || (result.signal ? 1 : 0));
 }
 
-launch().catch(error => { console.error(error); process.exit(1); });
+launch().catch(async error => { console.error(error); await qqRuntime?.stop(); process.exit(1); });

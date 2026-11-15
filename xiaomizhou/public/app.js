@@ -1,3 +1,5 @@
+import { renderNapcat } from './napcat-ui.js';
+let disposePage = null;
 const app = document.querySelector('#app');
 const state = { page: 'overview', plugin: null, rule: null, platform: 'jd', rebateConfig: null, bootstrap: null };
 const starter = `function handle(event, api) {
@@ -56,11 +58,7 @@ async function editor() {
   document.querySelector('#run-test').onclick = async () => { const out = document.querySelector('#test-result'); if (!state.plugin?.id) { out.textContent = '请先保存插件，再运行模拟测试。'; return; } try { const result = await api(`/plugins/${state.plugin.id}/test`, { method: 'POST', body: { channel: document.querySelector('#test-channel').value, text: document.querySelector('#test-text').value } }); out.textContent = result.errors.length ? `运行错误：${result.errors.map(item => item.message).join('; ')}` : result.actions.length ? JSON.stringify(result.actions, null, 2) : '没有产生动作。请检查匹配条件。'; } catch(e) { out.textContent = `转链失败：${e.message}`; } finally { document.querySelector('#rebate-test').disabled = rebateDirty; } }; iconsReady();
 }
 async function qq() {
-  const [data, settings] = await Promise.all([api('/qq'), api('/settings')]);
-  shell(`${heading('个人 QQ', 'OneBot 11 HTTP 接入与收发状态')}<div class="two-col"><div class="panel pad"><div class="section-head"><h2>NapCat 连接</h2><span class="pill ${data.enabled ? '' : 'off'}">${data.enabled ? '已启用' : '未启用'}</span></div><div class="field"><label for="qq-endpoint">HTTP API 地址</label><input id="qq-endpoint" value="${escapeHtml(data.endpoint)}" placeholder="http://napcat:3000"><small>填写 NapCat OneBot 11 正向 HTTP 服务地址。容器部署时使用容器名或飞牛局域网地址。</small></div><div class="field"><label for="qq-token">NapCat Access Token</label><input id="qq-token" type="password" value="${escapeHtml(data.accessToken)}" autocomplete="off" placeholder="可选，但建议在 NapCat 中设置"></div><div class="field"><label class="switch"><input id="qq-enabled" type="checkbox" ${data.enabled ? 'checked' : ''}> 启用消息接收</label></div><div class="row"><button class="btn primary" id="qq-save">${icon('save')} 保存配置</button><button class="btn" id="qq-test">${icon('plug-zap')} 测试连接</button></div><div class="result" id="qq-result" style="margin-top:18px;min-height:58px">${data.lastError ? escapeHtml(data.lastError) : '等待连接测试'}</div></div><div><div class="panel pad"><div class="section-head"><h2>消息回调</h2></div><p class="muted">NapCat 的 HTTP POST 上报地址：</p><div class="field"><input class="mono" id="qq-callback" readonly value="${escapeHtml(`${location.origin}/api/qq/events?token=${settings.webhookToken}`)}"><small>回调地址包含接入令牌，只在可信局域网内使用。</small></div><p class="muted">最近收到消息：${data.lastEventAt ? escapeHtml(date(data.lastEventAt)) : '暂无'}</p><p class="help">插件可使用 api.reply(text) 回复当前私聊或群聊；用 api.forward('qq', 'group:群号', text) 转发到 QQ 群，私聊目标写 private:QQ号。支持文字、链接和普通图片。群转发与合并消息拆分在“转发规则”设置；合并记录中的内容由当前 QQ 账号逐条发送。 发送 time、/time 或“时间”可直接查询北京时间，无需 AI。</p></div></div></div>`);
-  document.querySelector('#qq-save').onclick = async () => { try { await api('/qq', { method: 'PUT', body: { endpoint: document.querySelector('#qq-endpoint').value, accessToken: document.querySelector('#qq-token').value, enabled: document.querySelector('#qq-enabled').checked } }); toast('QQ 配置已保存'); qq(); } catch(e) { toast(e.message); } };
-  document.querySelector('#qq-test').onclick = async () => { const out = document.querySelector('#qq-result'); out.textContent = '连接中…'; try { const account = await api('/qq/test', { method: 'POST' }); out.textContent = `已连接：${account.nickname || 'QQ'} (${account.userId})`; } catch(e) { out.textContent = e.message; } };
-  iconsReady();
+  disposePage = await renderNapcat({ api, shell, heading, icon, escapeHtml, date, toast, active: () => state.page === 'qq' && state.bootstrap.authenticated, reload: render });
 }
 async function qqbot() {
   const data = await api('/qqbot');
@@ -241,5 +239,5 @@ async function updates() {
   };
   iconsReady();
 }
-async function render() { try { if (!state.bootstrap) state.bootstrap = await api('/bootstrap'); if (!state.bootstrap.authenticated) return authView(); await ({ overview, ai, plugins, editor, qq, qqbot, weixin, forwards, rebates, logs, settings, updates }[state.page] || overview)(); } catch(e) { app.innerHTML = `<div class="auth-wrap"><div class="auth"><h1>无法加载控制台</h1><p>${escapeHtml(e.message)}</p><button class="btn" onclick="location.reload()">重试</button></div></div>`; } }
+async function render() { disposePage?.(); disposePage = null; try { if (!state.bootstrap) state.bootstrap = await api('/bootstrap'); if (!state.bootstrap.authenticated) return authView(); await ({ overview, ai, plugins, editor, qq, qqbot, weixin, forwards, rebates, logs, settings, updates }[state.page] || overview)(); } catch(e) { app.innerHTML = `<div class="auth-wrap"><div class="auth"><h1>无法加载控制台</h1><p>${escapeHtml(e.message)}</p><button class="btn" onclick="location.reload()">重试</button></div></div>`; } }
 render();
