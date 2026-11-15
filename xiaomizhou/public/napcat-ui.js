@@ -1,3 +1,38 @@
+export function logPanel(id, title, description, { escapeHtml, icon }, personal = false) {
+  const areas = { qq: '个人 QQ', napcat: 'NapCat 内核', qqbot: 'QQ 官方机器人', wecom: '企业微信', weixin: '微信', plugin: '插件', forward: '消息转发', rebate: '返利转链', ai: 'AI 大脑', system: '系统', server: '服务', event: '消息接入', update: '在线更新', backup: '数据备份' };
+  return `<section class="panel log-panel" id="${id}" aria-label="${escapeHtml(title)}"><div class="pad"><div class="section-head"><h2>${escapeHtml(title)}</h2><button class="btn small" data-log-refresh>${icon('refresh-cw')} 刷新</button></div><p class="muted">${escapeHtml(description)}</p><div class="row log-controls"><label>级别 <select data-log-level aria-label="日志级别"><option value="">全部级别</option><option value="error">错误</option><option value="warn">警告</option><option value="info">信息</option><option value="debug">调试</option></select></label><label>模块 <select data-log-area aria-label="日志模块"><option value="">全部模块</option>${Object.entries(areas).filter(([key]) => !personal || ['qq', 'napcat', 'plugin', 'forward', 'rebate', 'ai', 'server', 'event'].includes(key)).map(([key, label]) => `<option value="${key}">${label}</option>`).join('')}</select></label><label class="switch"><input type="checkbox" data-log-auto checked> 自动刷新</label></div><p class="muted" data-log-status role="status">正在读取日志…</p></div><div data-log-rows></div></section>`;
+}
+
+export function bindLogPanel({ id, api, escapeHtml, date, active, personal = false }) {
+  const panel = document.getElementById(id);
+  const get = selector => panel.querySelector(selector);
+  let alive = true, timer, sequence = 0;
+  const current = () => alive && panel.isConnected && active();
+  async function refresh() {
+    clearTimeout(timer);
+    if (!current()) return;
+    const request = ++sequence;
+    const params = new URLSearchParams();
+    if (personal) params.set('source', 'qq');
+    if (get('[data-log-level]').value) params.set('level', get('[data-log-level]').value);
+    if (get('[data-log-area]').value) params.set('area', get('[data-log-area]').value);
+    try {
+      const data = await api(`/logs?${params}`);
+      if (!current() || request !== sequence) return;
+      get('[data-log-rows]').innerHTML = data.logs.length ? `<div class="table-wrap"><table class="log-table"><thead><tr><th>时间</th><th>级别</th><th>模块</th><th>详情</th></tr></thead><tbody>${data.logs.map(item => `<tr><td class="mono">${escapeHtml(date(item.time))}</td><td><span class="pill ${['error', 'warn'].includes(item.level) ? 'warn' : 'off'}">${escapeHtml(item.levelLabel || item.level)}</span></td><td>${escapeHtml(item.areaLabel || item.area)}</td><td class="log-message">${escapeHtml(item.message)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">暂无符合条件的日志</div>';
+      get('[data-log-status]').textContent = `最近 ${data.logs.length} 条 · 更新于 ${date(new Date())}${get('[data-log-auto]').checked ? ' · 每 5 秒自动刷新' : ' · 已暂停自动刷新'}`;
+    } catch (error) {
+      if (current() && request === sequence) get('[data-log-status]').textContent = `日志刷新失败：${error.message}。可点击刷新重试。`;
+    } finally {
+      if (current() && request === sequence && get('[data-log-auto]').checked) timer = setTimeout(refresh, 5000);
+    }
+  }
+  get('[data-log-refresh]').onclick = refresh;
+  for (const selector of ['[data-log-level]', '[data-log-area]', '[data-log-auto]']) get(selector).onchange = refresh;
+  void refresh();
+  return () => { alive = false; sequence++; clearTimeout(timer); };
+}
+
 export async function renderNapcat({ api, shell, heading, icon, escapeHtml, date, toast, active, reload }) {
   const [config, qq, settings] = await Promise.all([api('/napcat'), api('/qq'), api('/settings')]);
   if (!active()) return () => {};
@@ -34,7 +69,7 @@ export async function renderNapcat({ api, shell, heading, icon, escapeHtml, date
     <details class="panel pad section" id="qq-manual" ${config.bundled ? 'hidden' : ''}><summary>手动接入与排错</summary><div class="two-col section">
       <div><div class="field"><label for="qq-endpoint">HTTP API 地址</label><input id="qq-endpoint" value="${escapeHtml(qq.endpoint)}" placeholder="http://napcat:3000"></div><div class="field"><label for="qq-token">消息 API Access Token</label><input id="qq-token" type="password" autocomplete="off" value="${escapeHtml(qq.accessToken)}"></div><div class="field"><label class="switch"><input id="qq-enabled" type="checkbox" ${qq.enabled ? 'checked' : ''}> 启用消息接收</label></div><div class="row"><button class="btn" id="qq-save">保存手动配置</button><button class="btn" id="qq-test">测试消息连接</button></div><p id="qq-result" class="muted" role="status">${escapeHtml(qq.lastError || '已有 NapCat 消息服务可以在此手动接入')}</p></div>
       <div><div class="field"><label for="qq-callback">HTTP POST 回调地址</label><input id="qq-callback" class="mono" readonly value="${escapeHtml(`${config.callbackBaseUrl || location.origin}/api/qq/events?token=${settings.webhookToken}`)}"><small>包含接入令牌，请妥善保管。自动接通时会写入 NapCat。</small></div><p class="help">手动配置不影响已有转发规则。群转发目标填写 group:群号，私聊目标填写 private:QQ号。发送 time 或“时间”可测试回复。</p></div>
-    </div></details>`);
+    </div></details><div class="section">${logPanel('qq-logs', '个人 QQ 日志', '仅显示个人 QQ 与 NapCat 的连接、消息处理、回复、转发和失败重试。保留最近 100 条匹配记录。', { escapeHtml, icon }, true)}</div>`);
 
   const element = id => document.getElementById(id);
   const panel = element('napcat-form');
@@ -200,6 +235,7 @@ export async function renderNapcat({ api, shell, heading, icon, escapeHtml, date
       }
     };
   }
+  const disposeLogs = bindLogPanel({ id: 'qq-logs', api, escapeHtml, date, active: current, personal: true });
   void poll();
-  return () => { alive = false; clearTimeout(timer); };
+  return () => { alive = false; clearTimeout(timer); disposeLogs(); };
 }

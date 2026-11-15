@@ -53,6 +53,7 @@ db.exec(`
 `);
 // Idempotent migration for installations upgraded through the online updater.
 const forwardColumns = new Set(db.prepare('PRAGMA table_info(forward_rules)').all().map(column => column.name));
+if (!db.prepare('PRAGMA table_info(logs)').all().some(column => column.name === 'source')) db.exec("ALTER TABLE logs ADD COLUMN source TEXT NOT NULL DEFAULT ''");
 for (const [name, declaration] of [['include_images', 'INTEGER NOT NULL DEFAULT 1'], ['split_forward', 'INTEGER NOT NULL DEFAULT 1'], ['send_interval', 'INTEGER NOT NULL DEFAULT 1000'], ['content_rules', "TEXT NOT NULL DEFAULT '{}'"]]) {
   if (!forwardColumns.has(name)) db.exec(`ALTER TABLE forward_rules ADD COLUMN ${name} ${declaration}`);
 }
@@ -66,13 +67,12 @@ const q = {
   plugins: db.prepare('SELECT * FROM plugins ORDER BY updated_at DESC'),
   enabled: db.prepare('SELECT * FROM plugins WHERE enabled=1 ORDER BY id'),
   forwardRules: db.prepare('SELECT * FROM forward_rules ORDER BY id DESC'),
-  enabledRules: db.prepare('SELECT * FROM forward_rules WHERE enabled=1 ORDER BY id'),
-  logs: db.prepare('SELECT * FROM logs ORDER BY id DESC LIMIT 100')
+  enabledRules: db.prepare('SELECT * FROM forward_rules WHERE enabled=1 ORDER BY id')
 };
 const now = () => new Date().toISOString();
 const getSetting = (key, fallback = '') => q.setting.get(key)?.value ?? fallback;
 const putSetting = db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value');
-const insertLog = db.prepare('INSERT INTO logs(time,level,area,message) VALUES(?,?,?,?)');
+const insertLog = db.prepare('INSERT INTO logs(time,level,area,message,source) VALUES(?,?,?,?,?)');
 const deliveredQq = db.prepare('SELECT 1 FROM qq_deliveries WHERE message_id=? AND action_index=?');
 const markQqDelivered = db.prepare('INSERT OR IGNORE INTO qq_deliveries(message_id,action_index,delivered_at) VALUES(?,?,?)');
 const deliveredForward = db.prepare('SELECT 1 FROM qq_forward_deliveries WHERE message_id=? AND action_key=?');
@@ -97,8 +97,64 @@ const storePendingQq = db.prepare('INSERT OR IGNORE INTO qq_pending_events(messa
 // A process exit may interrupt delivery before the HTTP callback receives a result.
 db.prepare("UPDATE qq_pending_events SET state='waiting' WHERE state='processing'").run();
 const qqStatus = { lastEventAt: null, lastError: null };
-function log(level, area, message) {
-  insertLog.run(now(), level, area, String(message).slice(0, 1000));
+const logAreas = { qq: '个人 QQ', napcat: 'NapCat 内核', qqbot: 'QQ 官方机器人', wecom: '企业微信', weixin: '微信', system: '系统', server: '服务', event: '消息接入', plugin: '插件', forward: '消息转发', rebate: '返利转链', ai: 'AI 大脑', update: '在线更新', backup: '数据备份' };
+const logLevels = { info: '信息', warn: '警告', error: '错误', debug: '调试' };
+const platformNames = { jd: '京东', taobao: '淘宝', pdd: '拼多多' };
+function chineseLog(message, area) {
+  return String(message)
+    .replace(/^(private|group) message (.+) from (.+)$/, (_, type, id, chat) => `收到${type === 'group' ? '群聊' : '私聊'}消息；会话：${chat}；消息编号：${id}`)
+    .replace(/^QQ Bot WebSocket connection failed$/, 'QQ 官方机器人长连接失败，请检查网络和开放平台配置')
+    .replace(/^QQ Bot AppID and AppSecret required$/, 'QQ 官方机器人缺少 AppID 或 AppSecret')
+    .replace(/^QQ Bot returned no access token$/, 'QQ 开放平台未返回访问令牌')
+    .replace(/^QQ Bot (token|gateway) HTTP (\d+)$/, (_, kind, code) => `QQ 官方机器人${kind === 'token' ? '获取令牌' : '获取网关'}失败；HTTP 状态码：${code}`)
+    .replace(/^Invalid QQ Bot gateway URL$/, 'QQ 官方机器人网关地址无效')
+    .replace(/^Invalid QQ Bot heartbeat interval$/, 'QQ 官方机器人心跳间隔无效')
+    .replace(/^(QQ Bot|QQ bridge|WeCom app) (enabled|disabled)$/, (_, name, state) => `${{ 'QQ Bot': 'QQ 官方机器人', 'QQ bridge': '个人 QQ 消息接收', 'WeCom app': '企业微信应用' }[name]}${state === 'enabled' ? '已启用' : '已停用'}`)
+    .replace(/^Administrator account created$/, '管理员账号已创建')
+    .replace(/^Conversation history cleared$/, 'AI 对话历史已清空')
+    .replace(/^NapCat management configuration saved$/, 'NapCat 连接配置已保存')
+    .replace(/^NapCat message API and callback configured$/, 'NapCat 消息接口与回调已接通')
+    .replace(/^Database snapshot downloaded$/, '数据库备份已下载')
+    .replace(/^Temporary cleanup: /, '清理临时备份失败：')
+    .replace(/^Installed v(.+); restarting$/, '已安装 v$1，正在重启服务')
+    .replace(/^Configuration proposal #(\d+) (approved|rejected)$/, (_, id, state) => `AI 配置申请 #${id} ${state === 'approved' ? '已批准' : '已拒绝'}`)
+    .replace(/^(\S+) (enabled|disabled)$/, (text, provider, state) => area === 'ai' ? `${provider} ${state === 'enabled' ? '已启用' : '已停用'}` : text)
+    .replace(/^Automatic conversion (enabled|disabled)$/, (_, state) => `消息自动转链${state === 'enabled' ? '已启用' : '已停用'}`)
+    .replace(/^Updated (jd|taobao|pdd) connector$/, (_, platform) => `${platformNames[platform]}返利接口配置已更新`)
+    .replace(/^(jd|taobao|pdd) (automatic|live|test) conversion$/, (_, platform, mode) => `${platformNames[platform]}${{ automatic: '自动转链成功', live: '转链成功', test: '转链测试完成' }[mode]}`)
+    .replace(/^Automatic conversion: /, '自动转链失败：')
+    .replace(/^(Created|Updated|Deleted) rule (\d+)$/, (_, action, id) => `转发规则 #${id} ${{ Created: '已创建', Updated: '已更新', Deleted: '已删除' }[action]}`)
+    .replace(/^(Created|Updated|Deleted|Enabled|Disabled) (.+)$/, (text, action, name) => area === 'plugin' ? `插件「${name}」${{ Created: '已创建', Updated: '已更新', Deleted: '已删除', Enabled: '已启用', Disabled: '已停用' }[action]}` : text)
+    .replace(/^Message (.+), action (\d+): /, '消息 $1，第 $2 个动作：')
+    .replace(/Action (\d+): /g, '第 $1 个动作：')
+    .replace(/Affiliate conversion/g, '返利转链')
+    .replace(/^Message (.+) from (.+)$/, '收到消息；发送者：$2；消息编号：$1')
+    .replace(/unsupported destination/g, '未找到可用的发送目标')
+    .replace(/image omitted; destination supports text only/g, '目标仅支持文字，已忽略图片')
+    .replace(/OneBot HTTP (\d+)/g, '个人 QQ 消息接口请求失败；HTTP 状态码：$1')
+    .replace(/OneBot retcode (\S+)/g, '个人 QQ 消息接口返回错误码：$1')
+    .replace(/Invalid QQ destination/g, '个人 QQ 发送目标无效')
+    .replace(/(^|[:：]\s*)fetch failed(?=$|[；;])/g, '$1网络请求失败（fetch failed）')
+    .replace(/^(qq|qqbot|wecom|weixin): (.+)$/, (_, channel, chat) => `${logAreas[channel]}收到消息；会话：${chat}`);
+}
+function safeLogMessage(message) {
+  let value = String(message);
+  for (const secret of [getSetting('webhookToken'), napcatConfig().webuiToken, qqConfig().accessToken]) {
+    if (secret) value = value.split(secret).join('[已隐藏]');
+  }
+  return value.replace(/([?&](?:token|access_token|accessToken|webuiToken)=)[^\s&#]+/gi, '$1[已隐藏]').replace(/Bearer\s+[^\s,;]+/gi, 'Bearer [已隐藏]').replace(/data:image\/png;base64,[A-Za-z0-9+/=]+/g, '[二维码已隐藏]').slice(0, 1000);
+}
+function publicLog(item) {
+  return { ...item, levelLabel: logLevels[item.level] || item.level, areaLabel: logAreas[item.area] || item.area, message: chineseLog(safeLogMessage(item.message), item.area) };
+}
+function listLogs(search = new URLSearchParams()) {
+  const conditions = [], values = [];
+  if (search.get('source') === 'qq') conditions.push("(source='qq' OR (source='' AND area IN ('qq','napcat')))");
+  for (const key of ['level', 'area']) if (search.get(key)) { conditions.push(`${key}=?`); values.push(search.get(key)); }
+  return db.prepare(`SELECT * FROM logs${conditions.length ? ` WHERE ${conditions.join(' AND ')}` : ''} ORDER BY id DESC LIMIT 100`).all(...values).map(publicLog);
+}
+function log(level, area, message, source = ['qq', 'napcat'].includes(area) ? 'qq' : '') {
+  insertLog.run(now(), level, area, chineseLog(safeLogMessage(message), area), source);
   db.prepare('DELETE FROM logs WHERE id NOT IN (SELECT id FROM logs ORDER BY id DESC LIMIT 1000)').run();
 }
 
@@ -124,6 +180,7 @@ async function runQqEvent(event) {
     db.prepare("UPDATE qq_pending_events SET state='done' WHERE message_id=?").run(event.deliveryKey);
     db.prepare("DELETE FROM qq_pending_events WHERE state IN ('done','failed') AND message_id NOT IN (SELECT message_id FROM qq_pending_events ORDER BY created_at DESC LIMIT 1000)").run();
     qqStatus.lastError = null;
+    log('info', 'qq', `消息 ${event.messageId} 处理完成：成功发送 ${delivery.delivered} 条${result.actions.length ? '' : '，未匹配回复或转发规则'}${delivery.warnings.length ? `，警告 ${delivery.warnings.length} 项` : ''}`);
     return { status: 200, result: { ...result, ...delivery } };
   } catch (error) {
     const failures = (pendingQqEvent.get(event.deliveryKey)?.failures || 0) + 1;
@@ -197,12 +254,12 @@ function processEvent(event, onlyId = null) {
   const plugins = onlyId ? [q.plugin.get(onlyId)].filter(Boolean) : q.enabled.all();
   for (const plugin of plugins) {
     try { actions.push(...runPlugin(plugin.source, event).map(action => ({ ...action, plugin: plugin.name }))); }
-    catch (error) { log('error', 'plugin', `${plugin.name}: ${error.message}`); errors.push({ plugin: plugin.name, message: error.message }); }
+    catch (error) { log('error', 'plugin', `${plugin.name}: ${error.message}`, event.channel); errors.push({ plugin: plugin.name, message: error.message }); }
   }
   if (!onlyId) {
     for (const rule of q.enabledRules.all()) {
       if (rule.source_channel !== event.channel || rule.source_chat_id !== event.chatId) continue;
-      actions.push(...qqForwardActions(event, rule, blocked => log('info', 'forward', `规则 #${blocked.ruleId} 第 ${blocked.nodeIndex + 1} 条命中禁止关键词：${blocked.keyword}`)));
+      actions.push(...qqForwardActions(event, rule, blocked => log('info', 'forward', `规则 #${blocked.ruleId} 第 ${blocked.nodeIndex + 1} 条命中禁止关键词：${blocked.keyword}`, event.channel)));
     }
   }
   return { actions, errors };
@@ -257,16 +314,27 @@ const napcatManager = createNapcatManager({ getConfig: napcatConfig, getQqConfig
 let napcatAutoBusy = false;
 let napcatAutoSynced = false;
 let napcatAutoError = null;
+let lastNapcatState;
+let lastNapcatUpdate;
+function observeNapcatStatus(status) {
+  const key = `${status.state}:${status.account?.userId || ''}`;
+  if (lastNapcatState === key) return;
+  lastNapcatState = key;
+  const labels = { unconfigured: '等待配置连接', waiting: '等待手机 QQ 扫码并确认登录', online: 'QQ 登录成功，账号已在线', offline: 'QQ 已掉线，请等待重连或重新扫码', 'auth-error': '管理接口鉴权失败，请检查 WebUI Token', unreachable: '无法连接 NapCat 服务，请检查内核运行状态' };
+  log(['offline', 'auth-error', 'unreachable'].includes(status.state) ? 'warn' : 'info', 'napcat', `${labels[status.state] || '登录状态未知'}${status.account?.userId ? `；QQ 号：${status.account.userId}` : ''}${status.error ? `；原因：${status.error}` : ''}`);
+}
 async function syncBundledQq() {
   if (process.env.NAPCAT_BUNDLED !== '1' || napcatAutoBusy || !getSetting('webhookToken')) return;
   napcatAutoBusy = true;
   try {
     const status = await napcatManager.status();
+    observeNapcatStatus(status);
     if (status.state !== 'online') { napcatAutoSynced = false; return; }
     if (!napcatAutoSynced || !status.messageConnected) {
       await napcatManager.connect(getSetting('webhookToken'), config => putSetting.run('qq.config', JSON.stringify(config)));
       if (status.account?.userId) await napcatManager.rememberAccount(status.account.userId);
       napcatAutoSynced = true;
+      log('info', 'napcat', '个人 QQ 消息接口与回调已自动接通，可以接收消息、回复和转发');
     }
     napcatAutoError = null;
   } catch (error) {
@@ -305,10 +373,10 @@ const aiSessions = createAiSessions();
 async function processIncoming(event) {
   const command = builtinReply(event);
   if (command) return { actions: [command], errors: [] };
-  const result = await applyRebates(event, processEvent(event), rebateAutomation(), convert, platformFor, log);
+  const result = await applyRebates(event, processEvent(event), rebateAutomation(), convert, platformFor, (level, area, message) => log(level, area, message, event.channel));
   finalizeForwardActions(result, (action, check) => {
-    if (check.blocked) log('info', 'forward', `${action.plugin} ${action.deliveryId} 已拦截：${check.reason}${check.keyword ? `，关键词：${check.keyword}` : ''}`);
-    else if (check.replacements) log('info', 'forward', `${action.plugin} ${action.deliveryId} 替换 ${check.replacements} 处文字或链接`);
+    if (check.blocked) log('info', 'forward', `${action.plugin} ${action.deliveryId} 已拦截：${check.reason}${check.keyword ? `，关键词：${check.keyword}` : ''}`, event.channel);
+    else if (check.replacements) log('info', 'forward', `${action.plugin} ${action.deliveryId} 替换 ${check.replacements} 处文字或链接`, event.channel);
   });
   const config = getAiConfig();
   const decision = aiSessions.route(event, result, config);
@@ -346,7 +414,7 @@ async function processIncoming(event) {
     Object.defineProperty(action, 'aiTurn', { value: { key, conversation, prompt, answer } });
     result.actions.push(action);
   } catch (error) {
-    log('error', 'ai', error.message);
+    log('error', 'ai', error.message, event.channel);
     result.errors.push({ plugin: 'AI', message: error.message });
   }
   return result;
@@ -356,13 +424,14 @@ async function deliverActions(event, result) {
   const warnings = [];
   let delivered = 0;
   for (const [index, action] of result.actions.entries()) {
+    if (action.type === 'blocked') continue;
     if (action.aiSession && !aiSessions.current(action.aiSession.key, action.aiSession.id)) continue;
     const qqTarget = (event.channel === 'qq' && action.type === 'reply') || (action.type === 'forward' && action.channel === 'qq') ? qqDestination(action, event) : null;
     const botTarget = (event.channel === 'qqbot' && action.type === 'reply') || (action.type === 'forward' && action.channel === 'qqbot') ? qqBotDestination(action, event) : null;
     const wecomTarget = (event.channel === 'wecom' && action.type === 'reply') || (action.type === 'forward' && action.channel === 'wecom') ? wecomDestination(action, event) : null;
     if (!qqTarget && !botTarget && !wecomTarget) {
       warnings.push(`Action ${index + 1}: unsupported destination`);
-      log('warn', event.channel, `Message ${event.messageId}, action ${index + 1}: unsupported destination`);
+      log('warn', event.channel, `Message ${event.messageId}, action ${index + 1}: unsupported destination`, event.channel);
       continue;
     }
     if (deliveredQq.get(event.deliveryKey, index) || (action.deliveryId && deliveredForward.get(event.deliveryKey, action.deliveryId))) continue;
@@ -380,13 +449,13 @@ async function deliverActions(event, result) {
         const sent = await qqBotBridge.send(botTarget, action.text, event.channel === 'qqbot' && botTarget.type === event.messageType && botTarget.id === event.chatId ? event.messageId : '', index * 4 + 1, action.images || []);
         for (const warning of sent.warnings || []) {
           warnings.push(`Action ${index + 1}: ${warning}`);
-          log('warn', 'qqbot', `Message ${event.messageId}, action ${index + 1}: ${warning}`);
+          log('warn', 'qqbot', `Message ${event.messageId}, action ${index + 1}: ${warning}`, event.channel);
         }
       }
       else await wecomBridge.send(wecomTarget, action.text);
       if (wecomTarget && action.images?.length) {
         warnings.push(`Action ${index + 1}: image omitted; destination supports text only`);
-        log('warn', event.channel, `Message ${event.messageId}, action ${index + 1}: image omitted; destination supports text only`);
+        log('warn', event.channel, `Message ${event.messageId}, action ${index + 1}: image omitted; destination supports text only`, event.channel);
       }
       if (action.deliveryId) markForwardDelivered.run(event.deliveryKey, action.deliveryId, now());
       else markQqDelivered.run(event.deliveryKey, index, now());
@@ -395,9 +464,11 @@ async function deliverActions(event, result) {
         pruneAiTurns.run(new Date(Date.now() - 30 * 86400 * 1000).toISOString());
       }
       delivered++;
+      const destination = qqTarget || botTarget || wecomTarget;
+      log('info', 'forward', `消息 ${event.messageId} ${action.type === 'reply' ? '回复' : '转发'}成功；目标：${qqTarget ? '个人 QQ' : botTarget ? 'QQ 官方机器人' : '企业微信'} ${destination.type === 'group' ? '群聊' : '私聊'} ${destination.id || destination.userId}；处理器：${action.plugin || '转发规则'}`, event.channel);
     } catch (error) {
       errors.push(`Action ${index + 1}: ${error.message}`);
-      log('error', event.channel, `Message ${event.messageId}, action ${index + 1}: ${error.message}`);
+      log('error', event.channel, `消息 ${event.messageId}，第 ${index + 1} 个动作发送失败：${error.message}`, event.channel);
       if (qqTarget) break; // Keep later nodes behind the failed node on webhook retry.
     }
   }
@@ -507,7 +578,7 @@ const server = http.createServer(async (req, res) => {
       if (!validToken(req.headers['x-webhook-token'])) return fail(res, 401, 'Invalid webhook token');
       const input = await body(req);
       const event = { channel: String(input.channel || ''), chatId: String(input.chatId || ''), userId: String(input.userId || ''), text: String(input.text || '').slice(0, 4000), images: Array.isArray(input.images) ? input.images.map(image => ({ url: imageUrl(image?.url) })).filter(image => image.url).slice(0, 3) : [] };
-      log('info', 'event', `${event.channel}: ${event.chatId}`);
+      log('info', 'event', `${event.channel}: ${event.chatId}`, event.channel);
       return json(res, 200, await processIncoming(event));
     }
     if (req.method === 'POST' && pathname === '/api/qq/events') {
@@ -597,7 +668,7 @@ const server = http.createServer(async (req, res) => {
         throw error;
       }
     }
-    if (req.method === 'GET' && pathname === '/api/overview') return json(res, 200, { pluginCount: q.plugins.all().length, enabledCount: q.enabled.all().length, recentLogs: q.logs.all().slice(0, 8), providerTypes: Object.fromEntries(Object.keys(platforms).map(p => [p, rebateConfig(p).provider || 'official'])), providers: Object.fromEntries(Object.keys(platforms).map(p => [p, rebateConfigured(p, rebateConfig(p)) ? 'live' : 'unconfigured'])), qq: publicQqConfig(), qqbot: publicQqBotConfig(), wecom: publicWecomConfig(), ai: { enabled: getAiConfig().enabled, provider: getAiConfig().provider, model: getAiConfig().model } });
+    if (req.method === 'GET' && pathname === '/api/overview') return json(res, 200, { pluginCount: q.plugins.all().length, enabledCount: q.enabled.all().length, recentLogs: listLogs().slice(0, 8), providerTypes: Object.fromEntries(Object.keys(platforms).map(p => [p, rebateConfig(p).provider || 'official'])), providers: Object.fromEntries(Object.keys(platforms).map(p => [p, rebateConfigured(p, rebateConfig(p)) ? 'live' : 'unconfigured'])), qq: publicQqConfig(), qqbot: publicQqBotConfig(), wecom: publicWecomConfig(), ai: { enabled: getAiConfig().enabled, provider: getAiConfig().provider, model: getAiConfig().model } });
     if (req.method === 'GET' && pathname === '/api/settings') return json(res, 200, { name: getSetting('name', 'xiaomizhou'), webhookToken: getSetting('webhookToken') });
     if (req.method === 'PUT' && pathname === '/api/settings') { const input = await body(req); putSetting.run('name', String(input.name || 'xiaomizhou').slice(0, 60)); return json(res, 200, { ok: true }); }
     if (req.method === 'GET' && pathname === '/api/ai') return json(res, 200, publicAiConfig());
@@ -643,12 +714,21 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/api/napcat') return json(res, 200, publicNapcatConfig());
     if (pathname.startsWith('/api/napcat/updates')) {
       if (process.env.NAPCAT_BUNDLED !== '1' || !process.send) return fail(res, 409, '在线更新需要完整内置 QQ 镜像');
-      if (req.method === 'GET' && pathname === '/api/napcat/updates') return json(res, 200, readNapcatUpdateStatus(dataDir));
+      if (req.method === 'GET' && pathname === '/api/napcat/updates') {
+        const status = readNapcatUpdateStatus(dataDir);
+        const key = `${status.state}:${status.currentVersion}:${status.latestVersion || ''}`;
+        if (key !== lastNapcatUpdate) {
+          lastNapcatUpdate = key;
+          log(status.state === 'error' ? 'error' : status.state === 'rolled-back' ? 'warn' : 'info', 'napcat', `NapCat 内核 v${status.currentVersion}：${status.message}`);
+        }
+        return json(res, 200, status);
+      }
       const action = /^\/api\/napcat\/updates\/(check|install|rollback)$/.exec(pathname)?.[1];
       if (req.method === 'POST' && action) {
         const input = await body(req);
         const accepted = await requestNapcatUpdate(action, String(input.version || ''));
         if (!accepted) return fail(res, 409, '已有内核更新任务正在进行');
+        log('info', 'napcat', `已请求${{ check: '检查 NapCat 更新', install: '升级 NapCat 内核', rollback: '回滚 NapCat 内核' }[action]}`);
         return json(res, 202, { accepted: true });
       }
     }
@@ -660,14 +740,23 @@ const server = http.createServer(async (req, res) => {
       log('info', 'napcat', 'NapCat management configuration saved');
       return json(res, 200, publicNapcatConfig());
     }
-    if (req.method === 'GET' && pathname === '/api/napcat/status') return json(res, 200, { ...await napcatManager.status(), lastEventAt: qqStatus.lastEventAt, autoError: napcatAutoError, runtime: process.env.NAPCAT_BUNDLED === '1' ? bundledRuntimeStatus(process.env.NAPCAT_STATUS_FILE) : null });
+    if (req.method === 'GET' && pathname === '/api/napcat/status') {
+      const status = await napcatManager.status();
+      observeNapcatStatus(status);
+      return json(res, 200, { ...status, lastEventAt: qqStatus.lastEventAt, autoError: napcatAutoError, runtime: process.env.NAPCAT_BUNDLED === '1' ? bundledRuntimeStatus(process.env.NAPCAT_STATUS_FILE) : null });
+    }
     if (req.method === 'POST' && pathname === '/api/napcat/restart') {
       if (process.env.NAPCAT_BUNDLED !== '1' || !process.send) return fail(res, 409, '当前不是内置 QQ 镜像');
       if (['checking', 'downloading', 'extracting', 'switching'].includes(readNapcatUpdateStatus(dataDir).state)) return fail(res, 409, '已有内核更新任务正在进行');
       process.send({ type: 'napcat-restart' });
+      log('info', 'napcat', '已请求重启 QQ 内核，消息收发将短暂中断');
       return json(res, 202, { ok: true });
     }
-    if (req.method === 'POST' && pathname === '/api/napcat/qrcode/refresh') return json(res, 200, await napcatManager.refreshQr());
+    if (req.method === 'POST' && pathname === '/api/napcat/qrcode/refresh') {
+      const result = await napcatManager.refreshQr();
+      log('info', 'napcat', '已请求刷新登录二维码，请使用手机 QQ 扫码');
+      return json(res, 200, result);
+    }
     if (req.method === 'POST' && pathname === '/api/napcat/connect') {
       const result = await napcatManager.connect(getSetting('webhookToken'), config => {
         putSetting.run('qq.config', JSON.stringify(config));
@@ -732,7 +821,7 @@ const server = http.createServer(async (req, res) => {
       await wecomBridge.token();
       return json(res, 200, { ok: true });
     }
-    if (req.method === 'GET' && pathname === '/api/logs') return json(res, 200, { logs: q.logs.all() });
+    if (req.method === 'GET' && pathname === '/api/logs') return json(res, 200, { logs: listLogs(new URL(req.url, 'http://localhost').searchParams) });
     if (req.method === 'GET' && pathname === '/api/plugins') return json(res, 200, { plugins: listPlugins() });
     if (req.method === 'GET' && pathname === '/api/forwards') return json(res, 200, { rules: listRules() });
     if (req.method === 'POST' && pathname === '/api/forwards/preview') {
@@ -820,7 +909,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && pathname === '/api/rebates/convert') { const input = await body(req); const result = await convert(input); log('info', 'rebate', `${result.platform} ${result.mode} conversion`); return json(res, 200, result); }
     return fail(res, 404, 'Not found');
-  } catch (error) { log('error', 'server', error.message); fail(res, error.status || 500, error.status ? error.message : 'Operation failed; check logs'); }
+  } catch (error) { log('error', 'server', error.message, /^\/api\/(?:qq|napcat)(?:\/|$)/.test(pathname) ? 'qq' : ''); fail(res, error.status || 500, error.status ? error.message : '操作失败，请查看运行日志'); }
 });
 server.listen(port, '0.0.0.0', () => {
   console.log(`xiaomizhou listening on http://0.0.0.0:${port}`);

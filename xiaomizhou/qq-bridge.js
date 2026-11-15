@@ -269,7 +269,10 @@ export async function oneBotCall(config, action, params) {
   });
   if (!response.ok) throw new Error(`OneBot HTTP ${response.status}`);
   const result = await response.json();
-  if ((result.status != null && result.status !== 'ok') || (result.retcode != null && result.retcode !== 0)) throw new Error(`OneBot retcode ${result.retcode ?? 'unknown'}`);
+  if ((result.status != null && result.status !== 'ok') || (result.retcode != null && result.retcode !== 0)) {
+    const detail = String(result.message || result.wording || '').slice(0, 300);
+    throw new Error(`OneBot retcode ${result.retcode ?? 'unknown'}${detail ? `；原因：${detail}` : ''}`);
+  }
   return result.data;
 }
 
