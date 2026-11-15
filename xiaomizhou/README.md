@@ -24,18 +24,21 @@ node server.js
 
 ### Docker 图形界面安装
 
-在飞牛 Docker 应用的「Compose」中点击「新增项目」，项目名称填 `xiaomizhou`，
-将 [compose.image.yml](compose.image.yml) 的内容粘贴到 Compose 编辑框并启动。
-此方式直接拉取 `ghcr.io/najiuwanan511/xiaomizhou:latest`，无需在飞牛上下载源码、
-安装 Git 或构建 Node 镜像。NAS 仍需能访问 `ghcr.io`。数据库存于 Docker 命名卷
-`xiaomizhou-data`，删除容器时请保留卷。启动后访问 `http://飞牛IP:8090`。
+适用于 Intel/AMD x86_64 飞牛设备。v0.3.18 起完整镜像内置 Linux QQ 和 NapCat，只启动一个小米粥容器。安装前确认 [Releases](https://github.com/najiuwanan511/xiaomizhou/releases) 中该版本已发布成功。
 
-如果 8090 已被占用，只改 Compose 的端口映射左侧数字（如 `"8091:8090"`），
-再访问 `http://飞牛IP:8091`。镜像更新时重新拉取 `latest` 并重新创建容器，
-或在依赖未变化时使用后台「在线更新」。卸载时删除 Compose 项目；需要保留账号及配置
-就不要删除命名卷。
+在飞牛 Docker 应用的「Compose」中点击「新增项目」，项目名称填 `xiaomizhou`，将 [compose.image.yml](compose.image.yml) 内容粘贴到编辑框并启动。此配置固定使用 `ghcr.io/najiuwanan511/xiaomizhou:v0.3.18`，无需下载源码或单独安装 NapCat。NAS 需要能访问 GHCR。
 
-### SSH 源码安装
+启动后访问 `http://飞牛IP:8090`，首次创建管理员账号（密码至少 12 位）。进入「个人 QQ」，等待内核启动，使用手机 QQ 扫码确认后自动接通消息。
+
+端口冲突时只改映射左侧，例如 `"8091:8090"`，并访问 `http://飞牛IP:8091`。数据存于命名卷 `xiaomizhou-data`，重建或卸载容器时保留该卷。完整迁移需备份整个卷；数据库下载备份不包含 QQ 登录数据和内核文件。
+
+升级时将镜像标签改为 Releases 中已经发布的目标版本，再拉取并重建容器。`latest` 指向最近成功发布版本。v0.3.17 等旧版首次升级到内置 QQ 版必须更换完整镜像，不能只更新后台代码。若已有安装，沿用原数据卷或原挂载目录。
+
+个人账号扫码和真实消息收发仍需在目标设备验证。发布流水线只验证完整镜像启动及真实 QQ/NapCat 生成登录二维码。
+
+### SSH 源码安装（轻量开发环境，不包含 QQ 内核）
+
+如需完整内置 NapCat，按 [内核构建说明](docs/napcat-integrated.md#从已锁定的归档构建) 操作；下列普通 `compose.yml` 仅用于轻量开发。
 
 1. 在飞牛 OS 应用中心安装并启动 Docker，确认飞牛有足够空间，并在系统设置中启用 SSH。
    在电脑终端运行 `ssh 飞牛用户名@飞牛IP` 登录；确认 `docker compose version` 和

@@ -1,0 +1,34 @@
+name: Verify bundled QQ runtime
+on:
+  push:
+    branches: ['codex/napcat-login']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install dependencies and run tests
+        working-directory: xiaomizhou
+        run: |
+          npm install -g pnpm@11.25.0
+          pnpm install --frozen-lockfile
+          node --test
+      - name: Build complete image and verify real QQ login QR
+        env:
+          NAPCAT_BASE_IMAGE: ${{ vars.NAPCAT_BASE_IMAGE }}
+        run: |
+          if [ -z "$NAPCAT_BASE_IMAGE" ]; then
+            NAPCAT_BASE_IMAGE="$(node xiaomizhou/scripts/prepare-napcat-image.js)"
+          fi
+          docker build -f xiaomizhou/Dockerfile.bundled --build-arg "NAPCAT_BASE_IMAGE=$NAPCAT_BASE_IMAGE" -t xiaomizhou-bundled-check ./xiaomizhou
+          docker run -d --name xiaomizhou-qq-smoke --shm-size=256m -p 127.0.0.1:18090:8090 xiaomizhou-bundled-check
+          trap 'docker rm -fv xiaomizhou-qq-smoke >/dev/null 2>&1 || true' EXIT
+          node xiaomizhou/scripts/smoke-bundled.js

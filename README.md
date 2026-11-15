@@ -4,7 +4,9 @@
 
 ## NapCat 群转发
 
-v0.3.18 开发中的完整镜像将 QQ、NapCat Shell 内核及原生库一起打进小米粥：一个容器，后台直接扫码，内部自动配置消息收发。已找到并校验 NapCat 4.18.42 + Linux QQ 3.2.34 完整归档，并加入 NapCat 在线更新、失败自动回滚和手动回滚。尚未完成 Linux/Docker 真实构建与扫码验收，尚未发布完整镜像，当前 `latest` 不包含这些未发布修改。构建与验证步骤见 [完整内核打包说明](xiaomizhou/docs/napcat-integrated.md)。
+v0.3.18 将 Linux QQ、NapCat Shell 内核及原生库一起打进小米粥：一个容器，后台直接扫码，内部自动配置消息收发。包含 NapCat 4.18.42、Linux QQ 3.2.34-53644，以及内核在线更新、失败自动回滚和手动回滚。
+
+完整镜像面向 Intel/AMD x86_64 飞牛设备。发布流程必须通过自动化测试和真实 QQ/NapCat 生成登录二维码的检查，才上传镜像并创建 [GitHub Release](https://github.com/najiuwanan511/xiaomizhou/releases)。安装前确认 v0.3.18 发布成功；仅推送源码不会生成新镜像。个人账号的扫码确认及消息收发仍需在设备上验证。详情见 [内核与更新说明](xiaomizhou/docs/napcat-integrated.md)。
 
 v0.3.15 起支持转发原消息文字、链接、图片和图文，并把 QQ 合并聊天记录拆成普通消息，
 由当前登录 QQ 逐条发送。转发规则提供原图开关、拆分开关和发送间隔；队列支持去重与自动重试。
@@ -20,13 +22,13 @@ v0.3.17 起，发送 `time`、`/time`、`时间` 或 `当前时间`，直接返�
 
 ## 飞牛 OS 安装
 
-推荐使用 Docker 图形界面，无需飞牛下载 GitHub 源码。在飞牛 Docker 应用中打开
+安装应用中心的 **Docker** 并启动。确认 [Releases](https://github.com/najiuwanan511/xiaomizhou/releases) 中有 v0.3.18 后，在飞牛 Docker 应用中打开
 「Compose」→「新增项目」，项目名称填 `xiaomizhou`，粘贴下方配置并启动：
 
 ```yaml
 services:
   xiaomizhou:
-    image: ghcr.io/najiuwanan511/xiaomizhou:latest
+    image: ghcr.io/najiuwanan511/xiaomizhou:v0.3.18
     container_name: xiaomizhou
     restart: unless-stopped
     ports:
@@ -50,37 +52,21 @@ volumes:
 删除或重建容器不会清除该卷；卸载项目时不要选择删除卷。完整配置也见
 [镜像 Compose 文件](xiaomizhou/compose.image.yml)。
 
-也可以从源码构建。适用于已安装 Docker、启用 SSH，并有 `git` 和 `docker compose` 命令的飞牛 OS：
+启动后访问 `http://飞牛IP:8090`，首次创建管理员账号（密码至少 12 位），再进入「个人 QQ」，等待内核启动并用手机 QQ 扫码、确认登录。消息接口和回调由小米粥自动设置。
 
-```sh
-git clone https://github.com/najiuwanan511/xiaomizhou.git "$HOME/xiaomizhou"
-cd "$HOME/xiaomizhou/xiaomizhou"
-docker compose up -d --build
-docker compose ps
-```
+如果 8090 被占用，将上面的 `"8090:8090"` 改为 `"8091:8090"`，改用 `http://飞牛IP:8091`。如果 GHCR 拉取失败，查看飞牛 Docker 的错误详情并检查设备网络，不要改成不存在的镜像地址。
 
-两种方式启动后都在同一局域网访问 `http://飞牛IP:8090`，首次进入时创建管理员账号。源码方式的项目在
-`$HOME/xiaomizhou/`，数据库、配置和插件数据在 `$HOME/xiaomizhou/xiaomizhou/data/`。
-源码方式首次构建需要飞牛能访问 Docker Hub 和 npm。详细步骤及 Docker
-图形界面安装方式见 [飞牛 OS 部署说明](xiaomizhou/README.md#飞牛-os-安装与维护)。
+从 v0.3.17 及更早版本升级，需要更换完整镜像；旧版后台在线更新无法安装新增依赖和 QQ 运行环境。迁移时保留原数据卷或挂载原数据目录，不要新建空卷替代旧数据。
+
+也可从源码构建，步骤见 [完整内核构建说明](xiaomizhou/docs/napcat-integrated.md#从已锁定的归档构建)。仓库的 `Dockerfile`/`compose.yml` 是轻量开发环境，不包含 QQ；内置 NapCat 必须使用 `Dockerfile.bundled`/`compose.bundled.yml`。
 
 ## 更新命令
 
-图形界面镜像安装：在飞牛 Docker 中拉取 `ghcr.io/najiuwanan511/xiaomizhou:latest`，
-然后重新创建该 Compose 项目的容器；保留 `xiaomizhou-data` 卷。依赖未变化的发布版也可在
-后台「在线更新」页安装。
+在飞牛 Docker 的 Compose 项目中，将 `image` 改成 [Releases](https://github.com/najiuwanan511/xiaomizhou/releases) 中已成功发布的目标版本标签，拉取并重建容器，保留 `xiaomizhou-data` 卷。`latest` 也指向最近一次成功发布的镜像；使用固定标签便于确认安装版本。
 
-源码安装：在飞牛 SSH 中执行以下命令，适用于代码或 Docker 依赖有变化时：
+小米粥后端依赖未变化的发布版，可在后台「在线更新」安装。NapCat 内核在「个人 QQ → NapCat 在线更新」独立检查、升级和回滚。目前更新源为第三方发行归档；官方 GitHub 当前没有可下载的 Releases，不保证归档会持续更新。
 
-```sh
-cd "$HOME/xiaomizhou"
-git pull --ff-only
-cd xiaomizhou
-docker compose up -d --build
-```
-
-已运行 `v0.2.0` 及以上 Docker 版本时，依赖未变化的正式发布版也可以在后台「在线更新」页安装。
-更新前建议在「系统设置」下载数据库备份。更新命令不会删除 `data/`。
+完整迁移或升级前，备份整个数据卷。后台下载的 SQLite 备份只包含数据库，不包含 QQ 登录文件、内核版本与配置备份。
 
 ## 卸载命令
 

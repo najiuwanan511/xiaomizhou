@@ -1,6 +1,8 @@
 # 小米粥内置 NapCat 与在线更新
 
-此功能处于本地开发阶段，尚未发布完整镜像。已取得并通过固定 SHA-256 校验的 NapCat 4.18.42 + Linux QQ 3.2.34-53644 完整运行归档，并通过真实 Shell ZIP 的解压与文件完整性检查。本机没有 Docker/Linux 环境，因此尚未执行完整镜像构建、真实 QQ 启动、扫码和消息验收。单元测试不代表 QQ 已能登录。
+v0.3.18 完整镜像包含 NapCat 4.18.42 + Linux QQ 3.2.34-53644。归档通过固定 SHA-256 校验，发布流水线在 Linux Runner 上执行完整镜像构建与真实内核登录二维码检查，成功后才发布镜像和 Release。请以 [Releases](https://github.com/najiuwanan511/xiaomizhou/releases) 和对应 Actions 成功记录确认版本是否已上线。自动化检查不登录个人账号，实际扫码确认及消息收发仍需在目标设备验证。
+
+发布镜像目前为 linux/amd64，适用于 Intel/AMD x86_64 飞牛设备；ARM64 使用下文的源码构建步骤。
 
 ## 安装后的使用方式
 
@@ -45,14 +47,32 @@
 
 默认输入是 [v4.18.42 归档](https://github.com/XingYunStar/NapCatQQ/releases/tag/v4.18.42)，amd64/arm64 的 URL、大小、SHA-256 以及 QQ 版本固定在 `napcat-runtime.lock.json`。构建准备脚本下载、校验并 `docker load`，不给构建阶段执行远程安装脚本。
 
-在 `xiaomizhou/` 目录执行（默认 amd64）：
+先下载源码并进入应用目录：
+
+```sh
+git clone --branch v0.3.18 --single-branch https://github.com/najiuwanan511/xiaomizhou.git "$HOME/xiaomizhou-napcat"
+cd "$HOME/xiaomizhou-napcat/xiaomizhou"
+```
+
+以下默认 amd64，需要宿主机有 Node.js 24：
 
 ```sh
 node scripts/prepare-napcat-image.js
 docker compose -f compose.bundled.yml up -d --build
 ```
 
-ARM64 构建在 ARM64 Docker 主机上执行：
+飞牛没有安装 Node.js 时，amd64 设备可使用临时容器下载校验，再由宿主机导入镜像：
+
+```sh
+docker run --rm -v "$PWD:/work" -w /work node:24-bookworm-slim node scripts/prepare-napcat-image.js --download-only
+docker load --input data/build-inputs/napcat-docker-v4.18.42-amd64.tar
+docker tag mlikiowa/napcat-docker:v4.18.42 xiaomizhou/napcat-runtime:4.18.42-amd64
+docker compose -f compose.bundled.yml up -d --build
+```
+
+每一步成功后再执行下一步。归档下载约 584 MiB，构建还需下载 QQ 系统依赖与 Node 镜像。使用 SSH 的账号需有 Docker 权限。
+
+ARM64 构建在具有 Node.js 24 的 ARM64 Docker 主机上执行：
 
 ```sh
 NAPCAT_BUILD_ARCH=arm64 node scripts/prepare-napcat-image.js
@@ -67,7 +87,7 @@ NAPCAT_BASE_IMAGE=xiaomizhou/napcat-runtime:4.18.42-arm64 docker compose -f comp
 
 GitHub 发布流程默认准备已锁定归档，构建完整镜像后启动临时容器，运行 `scripts/smoke-bundled.js`。只有实际 QQ/NapCat 生成登录二维码后才推送镜像。该检查不使用模拟服务，也不会登录个人账号。
 
-还需在目标设备实际扫码，用另一个账号验证 `time` 回复、图片与群转发；验证真实内核升级和回滚。当前尚未执行这些步骤，不能把本地测试结果视为生产可用性确认。本地未发布的代码不会自动出现在 `latest` 镜像里。
+还需在目标设备实际扫码，用另一个账号验证 `time` 回复、图片与群转发；验证真实内核升级和回滚。自动化二维码检查不等于个人账号收发消息已经验收。只有发布流程成功后对应镜像才会上线，单独推送源码不会改变 `latest`。
 
 ## 来源、许可与兼容模式
 
