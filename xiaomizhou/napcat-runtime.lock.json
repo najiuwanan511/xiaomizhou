@@ -17,11 +17,12 @@
   },
   "snowcat": {
     "repository": "DandanLLab/SnowCatQQ",
-    "version": "6.0.0-experimental.e465fba",
-    "commit": "e465fbaf7c66e79161c458b457c897cdae6258b4",
-    "url": "https://codeload.github.com/DandanLLab/SnowCatQQ/tar.gz/e465fbaf7c66e79161c458b457c897cdae6258b4",
-    "sha256": "d23e5391865373d7a2f6bc5a7333007de71586d60ecd79c51bcb33f5e70a78ff",
-    "size": 54184416
+    "version": "6.0.0-experimental.e292824",
+    "tag": "v6.0.0",
+    "commit": "e292824161b038996250d6da37a38d9a26f9ac10",
+    "url": "https://codeload.github.com/DandanLLab/SnowCatQQ/tar.gz/e292824161b038996250d6da37a38d9a26f9ac10",
+    "sha256": "c4979da0227ee5104e6c0b84e88273fc7b9de1937dc5b8f7f9085290cd90e4a6",
+    "size": 54108507
   },
   "shell": {
     "url": "https://github.com/XingYunStar/NapCatQQ/releases/download/v4.18.42/NapCat.Shell.zip",

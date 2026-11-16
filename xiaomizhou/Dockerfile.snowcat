@@ -18,8 +18,7 @@ WORKDIR /source/packages/snowcat-shell/dist
 RUN npm install --omit=dev --ignore-scripts --no-package-lock express@5.1.0 ws@8.18.3 \
     && mkdir -p defaults && cp config/napcat.json defaults/napcat.json \
     && rm -rf config && cp /source/LICENSE ./LICENSE \
-    && printf '%s\n' 'Source: https://github.com/DandanLLab/SnowCatQQ' \
-       'Commit: e465fbaf7c66e79161c458b457c897cdae6258b4' > SOURCE.txt \
+    && node -e "require('fs').writeFileSync('SOURCE.txt', JSON.stringify(require('/build/napcat-runtime.lock.json').snowcat,null,2))" \
     && test -f native/napi2native/napi2native.linux.x64.node
 
 FROM ${XIAOMIZHOU_BASE_IMAGE}

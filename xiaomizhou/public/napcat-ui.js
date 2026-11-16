@@ -40,7 +40,7 @@ export async function renderNapcat({ api, shell, heading, icon, escapeHtml, date
   const coreName = snowcat ? 'SnowCat' : 'NapCat';
   const canUpdateCore = config.bundled && !snowcat;
   shell(`${heading(`个人 QQ · ${coreName}`, '扫码登录 QQ，查看在线状态并接通消息收发')}
-    ${snowcat ? '<div class="notice">SnowCat 为实验适配。当前上游源码存在管理凭证校验问题，飞牛 Linux 扫码与真实收发尚未验收；暂不建议替换正在使用的内核。切换框架不能保证避免 QQ 风控掉线。</div>' : ''}
+    ${snowcat ? '<div class="notice">SnowCat 为实验适配，采用官方 v6.0.0 固定源码。飞牛 Linux 扫码与真实收发尚未验收；暂不建议替换正在使用的内核。切换框架不能保证避免 QQ 风控掉线。</div>' : ''}
     <div class="two-col napcat-panels">
       <section class="panel pad">
         <div class="section-head"><h2>QQ 扫码登录</h2><span class="pill off" id="napcat-state">正在检查</span></div>

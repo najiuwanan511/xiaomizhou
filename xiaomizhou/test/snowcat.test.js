@@ -130,5 +130,8 @@ test('bundled frameworks isolate config, secrets, saved login and runtime state 
   assert.notEqual(original.statusFile, snowcat.statusFile);
   assert.equal(snowcat.childEnv.QQ_FRAMEWORK, 'snowcat');
   assert.equal(snowcat.env.QQ_FRAMEWORK, 'snowcat');
+  assert.match(snowcat.childEnv.NAPCAT_WEBUI_JWT_SECRET_KEY, /^[a-f0-9]{64}$/);
+  assert.notEqual(snowcat.childEnv.NAPCAT_WEBUI_JWT_SECRET_KEY, snowcat.env.NAPCAT_WEBUI_TOKEN);
+  assert.equal(prepareBundledRuntime({ ...options, framework: 'snowcat' }).childEnv.NAPCAT_WEBUI_JWT_SECRET_KEY, snowcat.childEnv.NAPCAT_WEBUI_JWT_SECRET_KEY);
   assert.equal(prepareBundledRuntime(options).env.NAPCAT_WEBUI_TOKEN, original.env.NAPCAT_WEBUI_TOKEN);
 });

@@ -12,9 +12,9 @@
 - SnowCat 使用 `data/snowcat`、`data/snowcat-qq-home`、`data/snowcat-private.json` 和 `data/snowcat-runtime.json`，保留原 NapCat 数据。
 - 内置 SnowCat 可从页面请求重启；禁用 NapCat 独立更新接口，避免把 NapCat 包装到 SnowCat 目录中。SnowCat 暂需重新构建完整镜像更新。
 
-## 当前阻断：上游凭证校验
+## 版本选择与上游凭证回归
 
-固定研究源码：[`e465fbaf7c66e79161c458b457c897cdae6258b4`](https://github.com/DandanLLab/SnowCatQQ/tree/e465fbaf7c66e79161c458b457c897cdae6258b4)，上游标称 v6.0.0，实验构建使用 `6.0.0-experimental.e465fba` 标识。
+当前主分支研究源码 [`e465fbaf7c66e79161c458b457c897cdae6258b4`](https://github.com/DandanLLab/SnowCatQQ/tree/e465fbaf7c66e79161c458b457c897cdae6258b4) 存在下面的凭证缺陷，因此实验构建改用官方 [`v6.0.0`](https://github.com/DandanLLab/SnowCatQQ/tree/v6.0.0) 的固定提交 `e292824161b038996250d6da37a38d9a26f9ac10`，版本标识 `6.0.0-experimental.e292824`。该标签的密码、签名和凭证校验独立执行全部通过。
 
 上游 `packages/snowcat-webui-backend/src/helper/SignToken.ts` 中，`validateCredentialWithinOneHour()` 将凭证内的密码哈希与 `generatePasswordHash(token)` 比较，而后者每次生成新随机盐。因此正常登录签发、HMAC 正确的凭证也无法通过后续管理请求校验。旧 SHA-256 登录和新 scrypt 登录均复现此问题。上游中间件对扫码、状态和配置接口调用了这段校验。
 
@@ -25,7 +25,9 @@ node scripts/prepare-snowcat-source.js data/snowcat-source
 node scripts/check-snowcat-auth.js data/snowcat-source --require-working
 ```
 
-脚本只移除 TypeScript 类型，并将上游内存存储模块的导入地址重定向到同一份原始实现，不修改鉴权函数、不加载 QQ 或原生钩子，也不打印测试令牌。当前输出密码匹配、签名正确，但凭证验证失败，并以非零状态结束。
+脚本只移除 TypeScript 类型，并将上游内存存储模块的导入地址重定向到同一份原始实现，不修改鉴权函数、不加载 QQ 或原生钩子，也不打印测试令牌。默认下载当前锁定的官方 v6.0.0，输出密码、签名、凭证验证全部通过；将路径指向上述主分支提交时，凭证验证失败并以非零状态结束。
+
+官方标签默认签名密钥有弱随机回退。小米粥使用它已有的 `NAPCAT_WEBUI_JWT_SECRET_KEY` 环境接口，提供单独的 256 位加密随机密钥并持久保存，内置 WebUI 只监听容器回环地址，不使用该回退、不修改内核源码。
 
 小米粥不会跳过鉴权或关闭上游两步验证。开启两步验证的外部内核暂只能使用已配置好的手动 OneBot 接入。对于反复签发无效凭证的内核，后台会暂缓登录重试，避免每次轮询耗尽上游登录次数。
 

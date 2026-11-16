@@ -28,6 +28,12 @@ export function prepareBundledRuntime({ dataDir, appPort, framework = 'napcat', 
     writeJson(privateFile, secrets);
   }
   if (!/^[a-f0-9]{64}$/.test(secrets.webuiToken || '')) throw new Error('内置 QQ 密钥格式无效，请恢复数据备份');
+  // The official SnowCat v6.0.0 supports a strong signing key through env;
+  // supply it explicitly so its Math.random fallback is never used.
+  if (framework === 'snowcat') {
+    if (!secrets.jwtKey) { secrets.jwtKey = crypto.randomBytes(32).toString('hex'); writeJson(privateFile, secrets); }
+    if (!/^[a-f0-9]{64}$/.test(secrets.jwtKey)) throw new Error('SnowCat 签名密钥格式无效，请恢复数据备份');
+  }
   const workdir = path.join(dataDir, framework);
   const home = path.join(dataDir, framework === 'napcat' ? 'qq-home' : 'snowcat-qq-home');
   fs.mkdirSync(workdir, { recursive: true, mode: 0o700 });
@@ -58,6 +64,7 @@ export function prepareBundledRuntime({ dataDir, appPort, framework = 'napcat', 
   const childEnv = {
     ...process.env, QQ_FRAMEWORK: framework, HOME: home, XDG_CONFIG_HOME: path.join(home, '.config'),
     NAPCAT_WORKDIR: workdir, NAPCAT_WEBUI_SECRET_KEY: secrets.webuiToken,
+    ...(framework === 'snowcat' ? { NAPCAT_WEBUI_JWT_SECRET_KEY: secrets.jwtKey } : {}),
     NAPCAT_WEBUI_PREFERRED_PORT: '6099', NAPCAT_DISABLE_PIPE: '1',
     NAPCAT_DISABLE_MULTI_PROCESS: '1', NAPCAT_QQ_PACKAGE_INFO_PATH: path.join(qqDir, 'resources/app/package.json'),
     NAPCAT_WRAPPER_PATH: path.join(qqDir, 'resources/app/wrapper.node'),
