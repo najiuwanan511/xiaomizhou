@@ -28,6 +28,10 @@ jobs:
       - name: Require usable upstream WebUI credentials
         run: node xiaomizhou/scripts/check-snowcat-auth.js /tmp/snowcat-source --require-working
   linux-runtime:
+    needs: compatibility
+    permissions:
+      contents: read
+      packages: write
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -38,7 +42,10 @@ jobs:
       - name: Build SnowCat-only Linux image
         run: |
           base="$(node xiaomizhou/scripts/prepare-qq-image.js)"
-          docker build -f xiaomizhou/Dockerfile.bundled --build-arg "QQ_BASE_IMAGE=$base" -t xiaomizhou/snowcat-experiment:local xiaomizhou
+          docker build -f xiaomizhou/Dockerfile.bundled --build-arg "QQ_BASE_IMAGE=$base" \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            -t xiaomizhou/snowcat-experiment:local xiaomizhou
       - name: Require real runtime and QR login
         run: |
           docker run -d --name xiaomizhou-qq-smoke --shm-size=256m -p 127.0.0.1:18090:8090 xiaomizhou/snowcat-experiment:local
@@ -47,4 +54,15 @@ jobs:
             node xiaomizhou/scripts/diagnose-bundled.js
             exit 1
           fi
-# Deliberately no registry login, image push or production release.
+      - name: Publish verified SnowCat preview
+        if: github.ref == 'refs/heads/codex/snowcat-adapter'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker tag xiaomizhou/snowcat-experiment:local "$image:snowcat-${GITHUB_SHA:0:7}"
+          docker tag xiaomizhou/snowcat-experiment:local "$image:snowcat-preview"
+          docker push "$image:snowcat-${GITHUB_SHA:0:7}"
+          docker push "$image:snowcat-preview"
+# Preview tags only: production latest and version tags are unchanged.

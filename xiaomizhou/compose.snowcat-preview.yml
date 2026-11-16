@@ -1,0 +1,24 @@
+# Upgrade an installation made with the documented one-click command.
+# The original external volume must already exist; never create an empty replacement.
+services:
+  xiaomizhou:
+    image: ghcr.io/najiuwanan511/xiaomizhou:snowcat-preview
+    container_name: xiaomizhou
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    environment:
+      TZ: Asia/Shanghai
+      PORT: "8090"
+      DATA_DIR: /app/data
+    volumes:
+      - xiaomizhou-data:/app/data
+    shm_size: 256mb
+    stop_grace_period: 15s
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  xiaomizhou-data:
+    external: true
+    name: xiaomizhou_xiaomizhou-data
