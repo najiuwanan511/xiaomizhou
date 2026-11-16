@@ -45,7 +45,9 @@ qq-runtime.lock.json 固定 SnowCat 源码提交、SHA-256、大小及 Linux QQ 
 
 构建只执行上游 build:webui 和 build:shell。官方标签的插件 SDK 声明目标存在类型解析错误，SDK 不参与 Shell/WebUI 运行，不随镜像发布。
 
-上一版适配已通过 98 项测试、Linux x86_64 构建和真实 QQ/SnowCat 登录二维码检查（[记录](https://github.com/najiuwanan511/xiaomizhou/actions/runs/43853523544)）。本次单内核与启停验收正在进行；CI 增加最终镜像无 NapCat、停止后 QQ/Xvfb 退出及端口关闭、重启容器保持关闭、重新启动恢复真实二维码的检查。
+2026-11-16，本次单内核与启停通过 95 项应用测试、锁定上游真实鉴权检查，以及 Linux x86_64 完整镜像构建和运行验收（[成功记录](https://github.com/najiuwanan511/xiaomizhou/actions/runs/43857416908)，运行代码提交 58e9e804f72ea70c1d6afb3aab755e1017ce0493）。验收确认最终镜像无 NapCat 运行目录或 Shell ZIP；停止后真实 QQ/Xvfb 进程退出、3000/6099 端口关闭；重启容器仍关闭；重新启动恢复真实登录二维码，再次停止也成功。未登录真实账号。
+
+本地浏览器使用模拟 QQ 管理服务和真实进程控制器验证了启动、停止、重启按钮及刷新后状态：停止后清除二维码、暂停消息状态、仅启用启动按钮。模拟界面验收不代替上述 Linux 真实运行验收。
 
 GitHub Actions 的 SnowCat experiment 仅使用临时容器，不上传镜像、不创建正式 Release。真实账号扫码、文字/图片/视频收发、掉线提醒与长期稳定性仍需实机验收。SnowCat 同样使用 QQ 运行时注入，不能保证避免外挂检测。
 

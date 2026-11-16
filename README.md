@@ -35,7 +35,7 @@ v0.3.20 在「个人 QQ → QQ 掉线提醒」中增加 PushPlus（微信接收�
 
 本次涉及启动器、QQ 运行包和依赖，必须升级完整镜像，不能仅在旧版后台在线更新。旧 v0.3.20 安装命令仍安装 NapCat，不包含此功能；下方 NapCat 版本说明为已发布历史。
 
-采用未经修改的官方 SnowCat v6.0.0 固定源码和 Linux QQ 3.2.34-53644。前一版适配已通过 Linux x86_64 真实二维码检查（[记录](https://github.com/najiuwanan511/xiaomizhou/actions/runs/43853523544)）；本次增加停止、重启容器保持关闭和恢复启动检查，验收状态见 [SnowCat 构建与验证说明](xiaomizhou/docs/snowcat-integrated.md)。账号实机收发和长期稳定性仍需验证。
+采用未经修改的官方 SnowCat v6.0.0 固定源码和 Linux QQ 3.2.34-53644。本次已通过 95 项应用测试、Linux x86_64 真实二维码、停止进程、重启容器保持关闭和恢复启动检查（[记录](https://github.com/najiuwanan511/xiaomizhou/actions/runs/43857416908)），详情见 [SnowCat 构建与验证说明](xiaomizhou/docs/snowcat-integrated.md)。账号实机收发和长期稳定性仍需验证。
 
 ## 自动视频解析（开发中，尚未发布）
 
