@@ -18,7 +18,7 @@ export async function startNapcatMock() {
     if (req.url === '/api/auth/login') {
       state.logins++;
       if (body.hash !== crypto.createHash('sha256').update(`${state.token}.napcat`).digest('hex')) return send(null, 'token is invalid', -1);
-      return send({ Credential: state.credential });
+      return send(state.require2FA ? { require2FA: true } : { Credential: state.credential });
     }
     if (req.url === '/get_login_info') {
       const token = state.config.network.httpServers.find(entry => entry.name === 'xiaomizhou-http')?.token;
@@ -30,7 +30,7 @@ export async function startNapcatMock() {
     }
     if (req.headers.authorization !== `Bearer ${state.credential}` || state.rejectCredentials-- > 0) return send(null, 'Unauthorized', -1);
     if (state.malformed) return send({ unexpected: true });
-    if (req.url === '/api/QQLogin/CheckLoginStatus') return send({ isLogin: state.loggedIn, isOffline: state.offline, qrcodeurl: state.qr, loginError: state.loginError });
+    if (req.url === '/api/QQLogin/CheckLoginStatus') return send({ isLogin: state.loggedIn, isOffline: state.offline, qrcodeurl: state.qr, loginError: state.loginError, ...(state.phase ? { loginPhase: state.phase, coreReady: state.phase === 'ready' } : {}) });
     if (req.url === '/api/QQLogin/GetQQLoginInfo') return send(state.info);
     if (req.url === '/api/QQLogin/SetQuickLoginQQ') { state.autoLoginAccount = body.uin; return send(null); }
     if (req.url === '/api/QQLogin/RefreshQRcode') { state.qr += '?refreshed=1'; return send(null); }

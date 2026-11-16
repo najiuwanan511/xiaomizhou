@@ -7,12 +7,13 @@ if (!/^[a-zA-Z0-9_.-]+$/.test(container)) throw new Error('Invalid diagnostic co
 const script = `
   const fs = require('fs'); const path = require('path');
   const root = '/app/data';
-  try { console.log('QQ process state:', fs.readFileSync(path.join(root, 'napcat-runtime.json'), 'utf8')); } catch {}
-  const dir = path.join(root, 'napcat/logs');
+  const framework = process.env.QQ_FRAMEWORK === 'snowcat' ? 'snowcat' : 'napcat';
+  try { console.log('QQ process state:', fs.readFileSync(path.join(root, framework + '-runtime.json'), 'utf8')); } catch {}
+  const dir = path.join(root, framework, 'logs');
   if (fs.existsSync(dir)) for (const name of fs.readdirSync(dir, {recursive:true}).filter(n=>n.endsWith('.log')).slice(-5)) {
     const file = path.join(dir, name);
     if (fs.statSync(file).size > 1024 * 1024) continue;
-    console.log('NapCat diagnostic log:', name);
+    console.log('QQ core diagnostic log:', name);
     console.log(fs.readFileSync(file, 'utf8').split('\\n').filter(line=>!/token|credential|secret|qrcode|二维码|qr_code|https?:\\/\\//i.test(line)).slice(-60).join('\\n'));
   }
 `;

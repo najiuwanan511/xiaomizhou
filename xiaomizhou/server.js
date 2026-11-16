@@ -6,13 +6,13 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync, backup } from 'node:sqlite';
 import { runPlugin, builtinReply } from './plugin-runner.js';
-import { oneBotEvent, qqDestination, oneBotCall, sendQq, expandQqForward, qqForwardActions, createQqBatchQueue, validateForwardContent, processForwardContent, finalizeForwardActions } from './qq-bridge.js';
+import { oneBotEvent, qqDestination, oneBotCall, sendQq, sendQqVideo, expandQqForward, qqForwardActions, createQqBatchQueue, validateForwardContent, processForwardContent, finalizeForwardActions, parseVideoConfig, videoShareLinks, videoRequests, resolveVideo, downloadVideo } from './qq-bridge.js';
 import { createQqBotBridge, qqBotDestination } from './qqbot-bridge.js';
 import { createWecomBridge, wecomCallback, wecomDestination, wecomEvent } from './wecom-bridge.js';
 import { applyRebates, convertAffiliate, rebateConfigured, defaultRebateTemplate, formatRebate, imageUrl, normalizeShareText, productUrls, validateRebateTemplate } from './rebate-automation.js';
 import { aiConfig, createAiSessions, generateAiReply, normalizeAiConfig, parseAiConfigRequest } from './ai-brain.js';
 import { checkUpdate, installUpdate } from './update-manager.js';
-import { createNapcatManager, parseNapcatConfig, parseQqNotificationConfig, publicQqNotificationConfig, createQqOfflineNotifier, sendQqNotification } from './napcat-manager.js';
+import { createNapcatManager, qqFramework, parseNapcatConfig, parseQqNotificationConfig, publicQqNotificationConfig, createQqOfflineNotifier, sendQqNotification } from './napcat-manager.js';
 import { bundledRuntimeStatus } from './bundled-runtime.js';
 import { readNapcatUpdateStatus } from './napcat-updater.js';
 
@@ -44,6 +44,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY, time TEXT NOT NULL, level TEXT NOT NULL, area TEXT NOT NULL, message TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS qq_deliveries (message_id TEXT NOT NULL, action_index INTEGER NOT NULL, delivered_at TEXT NOT NULL, PRIMARY KEY(message_id, action_index));
   CREATE TABLE IF NOT EXISTS qq_forward_cache (message_id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS qq_video_results (cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS qq_forward_deliveries (message_id TEXT NOT NULL, action_key TEXT NOT NULL, delivered_at TEXT NOT NULL, PRIMARY KEY(message_id,action_key));
   CREATE TABLE IF NOT EXISTS qq_pending_events (message_id TEXT PRIMARY KEY, payload TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'waiting', failures INTEGER NOT NULL DEFAULT 0, next_retry_at INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS forward_rules (id INTEGER PRIMARY KEY, source_channel TEXT NOT NULL, source_chat_id TEXT NOT NULL, target_channel TEXT NOT NULL, target TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'all', enabled INTEGER NOT NULL DEFAULT 1);
@@ -97,7 +98,7 @@ const storePendingQq = db.prepare('INSERT OR IGNORE INTO qq_pending_events(messa
 // A process exit may interrupt delivery before the HTTP callback receives a result.
 db.prepare("UPDATE qq_pending_events SET state='waiting' WHERE state='processing'").run();
 const qqStatus = { lastEventAt: null, lastError: null };
-const logAreas = { qq: '个人 QQ', napcat: 'NapCat 内核', qqbot: 'QQ 官方机器人', wecom: '企业微信', weixin: '微信', system: '系统', server: '服务', event: '消息接入', plugin: '插件', forward: '消息转发', rebate: '返利转链', ai: 'AI 大脑', update: '在线更新', backup: '数据备份' };
+const logAreas = { qq: '个人 QQ', napcat: 'QQ 内核', qqbot: 'QQ 官方机器人', wecom: '企业微信', weixin: '微信', system: '系统', server: '服务', event: '消息接入', plugin: '插件', forward: '消息转发', rebate: '返利转链', video: '视频解析', ai: 'AI 大脑', update: '在线更新', backup: '数据备份' };
 const logLevels = { info: '信息', warn: '警告', error: '错误', debug: '调试' };
 const platformNames = { jd: '京东', taobao: '淘宝', pdd: '拼多多' };
 function chineseLog(message, area) {
@@ -287,7 +288,7 @@ function listRules() {
 function qqConfig() {
   try {
     const saved = JSON.parse(getSetting('qq.config', '{}'));
-    return process.env.NAPCAT_BUNDLED === '1' ? { ...saved, endpoint: process.env.NAPCAT_ONEBOT_URL } : saved;
+    return process.env.NAPCAT_BUNDLED === '1' ? { ...saved, enabled: saved.enabled && (saved.framework || 'napcat') === (process.env.QQ_FRAMEWORK || 'napcat'), endpoint: process.env.NAPCAT_ONEBOT_URL } : saved;
   }
   catch { return {}; }
 }
@@ -299,6 +300,7 @@ function napcatConfig() {
   let saved = {};
   try { saved = JSON.parse(getSetting('napcat.config', '{}')); } catch { /* use deployment defaults */ }
   const defaults = {
+    framework: qqFramework(process.env.QQ_FRAMEWORK || 'napcat').id,
     webuiUrl: process.env.NAPCAT_WEBUI_URL || '',
     webuiToken: process.env.NAPCAT_WEBUI_TOKEN || '',
     onebotUrl: process.env.NAPCAT_ONEBOT_URL || qqConfig().endpoint || '',
@@ -308,7 +310,7 @@ function napcatConfig() {
 }
 function publicNapcatConfig() {
   const config = napcatConfig();
-  if (process.env.NAPCAT_BUNDLED === '1') return { bundled: true, webuiUrl: '', webuiToken: '', onebotUrl: '', callbackBaseUrl: '' };
+  if (process.env.NAPCAT_BUNDLED === '1') return { bundled: true, framework: config.framework, webuiUrl: '', webuiToken: '', onebotUrl: '', callbackBaseUrl: '' };
   return { bundled: false, ...config, webuiToken: config.webuiToken ? '********' : '' };
 }
 function qqNotificationConfig() {
@@ -354,10 +356,10 @@ let napcatAutoError = null;
 let lastNapcatState;
 let lastNapcatUpdate;
 function observeNapcatStatus(status) {
-  const key = `${status.state}:${status.account?.userId || ''}`;
+  const key = `${status.framework}:${status.state}:${status.account?.userId || ''}`;
   if (lastNapcatState === key) return;
   lastNapcatState = key;
-  const labels = { unconfigured: '等待配置连接', waiting: '等待手机 QQ 扫码并确认登录', online: 'QQ 登录成功，账号已在线', offline: 'QQ 已掉线，请等待重连或重新扫码', 'auth-error': '管理接口鉴权失败，请检查 WebUI Token', unreachable: '无法连接 NapCat 服务，请检查内核运行状态' };
+  const labels = { unconfigured: '等待配置连接', waiting: '等待手机 QQ 扫码并确认登录', initializing: '手机已确认，正在初始化 QQ 内核', online: 'QQ 登录成功，账号已在线', offline: 'QQ 已掉线，请等待重连或重新扫码', 'auth-error': '管理接口鉴权失败，请检查 WebUI Token', unreachable: '无法连接 QQ 内核服务，请检查内核运行状态' };
   log(['offline', 'auth-error', 'unreachable'].includes(status.state) ? 'warn' : 'info', 'napcat', `${labels[status.state] || '登录状态未知'}${status.account?.userId ? `；QQ 号：${status.account.userId}` : ''}${status.error ? `；原因：${status.error}` : ''}`);
 }
 async function syncBundledQq() {
@@ -407,7 +409,66 @@ function publicAiConfig() {
   return { ...config, apiKey: config.apiKey ? '********' : '', historyCount: db.prepare('SELECT count(*) AS count FROM ai_turns').get().count };
 }
 const aiSessions = createAiSessions();
+function getVideoConfig() {
+  try { return parseVideoConfig(JSON.parse(getSetting('video.config', '{}'))); }
+  catch { return parseVideoConfig(); }
+}
+function publicVideoConfig(config = getVideoConfig()) { return { ...config, douyinCookie: config.douyinCookie ? '********' : '' }; }
+const getVideoResult = db.prepare('SELECT payload FROM qq_video_results WHERE cache_key=?');
+const saveVideoResult = db.prepare('INSERT OR IGNORE INTO qq_video_results(cache_key,payload,created_at) VALUES(?,?,?)');
+let videoTestBusy = false;
+async function processVideoIncoming(event, links, config) {
+  const result = { actions: [], errors: [] };
+  for (const link of links) {
+    const key = `video:${crypto.createHash('sha256').update(link.url).digest('hex')}`;
+    const delivered = part => event.deliveryKey && deliveredForward.get(event.deliveryKey, `${key}:${part}`);
+    if (delivered('error') || delivered('file') && delivered('title')) continue;
+    const cacheKey = event.deliveryKey && `${event.deliveryKey}:${key}`;
+    const cached = cacheKey && getVideoResult.get(cacheKey);
+    let entry = cached && JSON.parse(cached.payload);
+    let bytes;
+    if (!entry) {
+      try {
+        const metadata = await resolveVideo(link, fetch, config);
+        bytes = await downloadVideo(metadata, config.maxSizeMB);
+        entry = { metadata };
+        log('info', 'video', `${metadata.platformName}解析成功：${metadata.title.slice(0, 120)}；视频 ${(bytes.length / 1048576).toFixed(1)} MB`, event.channel);
+      } catch (error) {
+        entry = { error: videoError(error) };
+        log('warn', 'video', `视频解析失败：${entry.error}`, event.channel);
+      }
+      // Freeze each event's result so a redelivered callback cannot change action
+      // order, resend an already sent video, or reply differently after a restart.
+      if (cacheKey) {
+        saveVideoResult.run(cacheKey, JSON.stringify(entry), now());
+        db.prepare('DELETE FROM qq_video_results WHERE created_at < ? OR cache_key NOT IN (SELECT cache_key FROM qq_video_results ORDER BY created_at DESC LIMIT 1000)').run(new Date(Date.now() - 7 * 86400000).toISOString());
+      }
+    }
+    if (entry.error) {
+      result.actions.push({ type: 'reply', text: `视频解析失败：${entry.error}`, plugin: '视频解析', deliveryId: `${key}:error` });
+      continue;
+    }
+    if (!delivered('file')) {
+      try { bytes ||= await downloadVideo(entry.metadata, config.maxSizeMB); }
+      catch (error) { result.errors.push({ plugin: '视频解析', message: videoError(error) }); break; }
+      const action = { type: 'reply', text: '', video: true, plugin: '视频解析', deliveryId: `${key}:file` };
+      // Do not include large/private media bytes in API responses or SQLite.
+      Object.defineProperty(action, 'videoBytes', { value: bytes });
+      result.actions.push(action);
+    }
+    if (!delivered('title')) result.actions.push({ type: 'reply', text: entry.metadata.title, plugin: '视频解析', deliveryId: `${key}:title` });
+  }
+  return result;
+}
+function videoError(error) {
+  if (['TimeoutError', 'AbortError'].includes(error.name)) return '平台响应超时，请稍后重新发送链接';
+  if (error.message === 'fetch failed') return '无法连接视频平台，请检查设备网络';
+  return String(error.message || '平台没有返回可用的无水印视频').slice(0, 300);
+}
 async function processIncoming(event) {
+  const videoConfig = getVideoConfig();
+  const links = videoRequests(event, videoConfig);
+  if (links.length) return processVideoIncoming(event, links, videoConfig);
   const command = builtinReply(event);
   if (command) return { actions: [command], errors: [] };
   const result = await applyRebates(event, processEvent(event), rebateAutomation(), convert, platformFor, (level, area, message) => log(level, area, message, event.channel));
@@ -471,13 +532,14 @@ async function deliverActions(event, result) {
       log('warn', event.channel, `Message ${event.messageId}, action ${index + 1}: unsupported destination`, event.channel);
       continue;
     }
-    if (deliveredQq.get(event.deliveryKey, index) || (action.deliveryId && deliveredForward.get(event.deliveryKey, action.deliveryId))) continue;
+    if (action.deliveryId ? deliveredForward.get(event.deliveryKey, action.deliveryId) : deliveredQq.get(event.deliveryKey, index)) continue;
     try {
       if (qqTarget) {
         const targetKey = `${qqTarget.type}:${qqTarget.id}`;
         const wait = (action.delayMs ?? 1000) - (Date.now() - (qqLastSent.get(targetKey) || 0));
         if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
-        await sendQq(qqConfig(), qqTarget, action.text, action.images || [], action.segments || null);
+        if (action.video) await sendQqVideo(qqConfig(), qqTarget, action.videoBytes);
+        else await sendQq(qqConfig(), qqTarget, action.text, action.images || [], action.segments || null);
         qqLastSent.set(targetKey, Date.now());
         if (qqLastSent.size > 1000) qqLastSent.delete(qqLastSent.keys().next().value);
       }
@@ -708,6 +770,29 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/api/overview') return json(res, 200, { pluginCount: q.plugins.all().length, enabledCount: q.enabled.all().length, recentLogs: listLogs().slice(0, 8), providerTypes: Object.fromEntries(Object.keys(platforms).map(p => [p, rebateConfig(p).provider || 'official'])), providers: Object.fromEntries(Object.keys(platforms).map(p => [p, rebateConfigured(p, rebateConfig(p)) ? 'live' : 'unconfigured'])), qq: publicQqConfig(), qqbot: publicQqBotConfig(), wecom: publicWecomConfig(), ai: { enabled: getAiConfig().enabled, provider: getAiConfig().provider, model: getAiConfig().model } });
     if (req.method === 'GET' && pathname === '/api/settings') return json(res, 200, { name: getSetting('name', 'xiaomizhou'), webhookToken: getSetting('webhookToken') });
     if (req.method === 'PUT' && pathname === '/api/settings') { const input = await body(req); putSetting.run('name', String(input.name || 'xiaomizhou').slice(0, 60)); return json(res, 200, { ok: true }); }
+    if (req.method === 'GET' && pathname === '/api/videos') return json(res, 200, publicVideoConfig());
+    if (req.method === 'PUT' && pathname === '/api/videos') {
+      const config = parseVideoConfig(await body(req), getVideoConfig());
+      putSetting.run('video.config', JSON.stringify(config));
+      log('info', 'video', `自动识别视频链接已${config.enabled ? '启用' : '停用'}；${config.groupIds.length ? `指定 ${config.groupIds.length} 个群` : '所有群'}；私聊${config.privateEnabled ? '启用' : '停用'}`, 'qq');
+      return json(res, 200, publicVideoConfig(config));
+    }
+    if (req.method === 'POST' && pathname === '/api/videos/test') {
+      if (videoTestBusy) return fail(res, 429, '已有视频正在测试，请稍后重试');
+      const input = await body(req);
+      const links = videoShareLinks(String(input.text || ''));
+      if (!links.length) return fail(res, 400, '请输入抖音、快手或皮皮虾的视频分享链接');
+      videoTestBusy = true;
+      try {
+        const metadata = await resolveVideo(links[0], fetch, getVideoConfig());
+        const bytes = await downloadVideo(metadata, getVideoConfig().maxSizeMB);
+        log('info', 'video', `${metadata.platformName}解析测试成功：${metadata.title.slice(0, 120)}`, 'qq');
+        return json(res, 200, { platformName: metadata.platformName, title: metadata.title, sizeBytes: bytes.length });
+      } catch (error) {
+        log('warn', 'video', `解析测试失败：${videoError(error)}`, 'qq');
+        return fail(res, 502, videoError(error));
+      } finally { videoTestBusy = false; }
+    }
     if (req.method === 'GET' && pathname === '/api/ai') return json(res, 200, publicAiConfig());
     if (req.method === 'GET' && pathname === '/api/ai/proposals') return json(res, 200, { proposals: aiProposals.all().map(({ id, channel, chat_id, user_id, setting_key, value, label, created_at }) => ({ id, channel, chatId: chat_id, userId: user_id, key: setting_key, value, label, createdAt: created_at })) });
     const proposalMatch = /^\/api\/ai\/proposals\/(\d+)\/(approve|reject)$/.exec(pathname);
@@ -750,6 +835,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && pathname === '/api/napcat') return json(res, 200, publicNapcatConfig());
     if (pathname.startsWith('/api/napcat/updates')) {
+      if (napcatConfig().framework === 'snowcat') return fail(res, 409, 'SnowCat 实验内核暂不支持独立在线更新，请重新构建完整镜像；不会下载 NapCat 覆盖 SnowCat');
       if (process.env.NAPCAT_BUNDLED !== '1' || !process.send) return fail(res, 409, '在线更新需要完整内置 QQ 镜像');
       if (req.method === 'GET' && pathname === '/api/napcat/updates') {
         const status = readNapcatUpdateStatus(dataDir);
@@ -771,10 +857,14 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'PUT' && pathname === '/api/napcat') {
       if (process.env.NAPCAT_BUNDLED === '1') return fail(res, 409, '内置 QQ 由小米粥自动管理，无需填写连接配置');
-      const config = parseNapcatConfig(await body(req), napcatConfig());
+      const previous = napcatConfig();
+      const config = parseNapcatConfig(await body(req), previous);
+      if (config.framework !== previous.framework || config.webuiUrl !== previous.webuiUrl || config.onebotUrl !== previous.onebotUrl || config.webuiToken !== previous.webuiToken) {
+        putSetting.run('qq.config', JSON.stringify({ enabled: false, endpoint: '', accessToken: '', framework: config.framework }));
+      }
       putSetting.run('napcat.config', JSON.stringify(config));
       napcatManager.clear();
-      log('info', 'napcat', 'NapCat management configuration saved');
+      log('info', 'napcat', `${qqFramework(config.framework).name} 连接配置已保存`);
       return json(res, 200, publicNapcatConfig());
     }
     if (req.method === 'GET' && pathname === '/api/napcat/status') {
@@ -784,7 +874,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && pathname === '/api/napcat/restart') {
       if (process.env.NAPCAT_BUNDLED !== '1' || !process.send) return fail(res, 409, '当前不是内置 QQ 镜像');
-      if (['checking', 'downloading', 'extracting', 'switching'].includes(readNapcatUpdateStatus(dataDir).state)) return fail(res, 409, '已有内核更新任务正在进行');
+      if (napcatConfig().framework !== 'snowcat' && ['checking', 'downloading', 'extracting', 'switching'].includes(readNapcatUpdateStatus(dataDir).state)) return fail(res, 409, '已有内核更新任务正在进行');
       process.send({ type: 'napcat-restart' });
       log('info', 'napcat', '已请求重启 QQ 内核，消息收发将短暂中断');
       return json(res, 202, { ok: true });
@@ -799,7 +889,7 @@ const server = http.createServer(async (req, res) => {
         putSetting.run('qq.config', JSON.stringify(config));
         qqStatus.lastError = null;
       });
-      log('info', 'napcat', 'NapCat message API and callback configured');
+      log('info', 'napcat', `${qqFramework(napcatConfig().framework).name} 消息接口与回调已接通`);
       return json(res, 200, result);
     }
     if (req.method === 'GET' && pathname === '/api/qq/notifications') return json(res, 200, { ...publicQqNotificationConfig(parseQqNotificationConfig(qqNotificationConfig())), status: qqOfflineNotifier.status() });

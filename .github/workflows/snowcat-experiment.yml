@@ -1,0 +1,52 @@
+name: SnowCat experiment
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/snowcat-adapter']
+permissions:
+  contents: read
+concurrency:
+  group: snowcat-experiment-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install and test XiaomiZhou adapter
+        working-directory: xiaomizhou
+        run: |
+          npm install -g pnpm@11.25.0
+          pnpm install --frozen-lockfile
+          node --test
+      - name: Fetch checksum-pinned upstream source
+        run: node xiaomizhou/scripts/prepare-snowcat-source.js /tmp/snowcat-source
+      - name: Require usable upstream WebUI credentials
+        run: node xiaomizhou/scripts/check-snowcat-auth.js /tmp/snowcat-source --require-working
+  linux-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Build bundled Linux QQ environment
+        run: |
+          base="$(node xiaomizhou/scripts/prepare-napcat-image.js)"
+          docker build -f xiaomizhou/Dockerfile.bundled --build-arg "NAPCAT_BASE_IMAGE=$base" -t xiaomizhou/qq-experiment:local xiaomizhou
+      - name: Build unchanged SnowCat Shell
+        run: docker build -f xiaomizhou/Dockerfile.snowcat --build-arg XIAOMIZHOU_BASE_IMAGE=xiaomizhou/qq-experiment:local -t xiaomizhou/snowcat-experiment:local xiaomizhou
+      - name: Require real runtime and QR login
+        run: |
+          docker run -d --name xiaomizhou-qq-smoke --shm-size=256m -p 127.0.0.1:18090:8090 xiaomizhou/snowcat-experiment:local
+          trap 'docker rm -fv xiaomizhou-qq-smoke >/dev/null 2>&1 || true' EXIT
+          if ! node xiaomizhou/scripts/smoke-bundled.js http://127.0.0.1:18090 snowcat; then
+            node xiaomizhou/scripts/diagnose-bundled.js
+            exit 1
+          fi
+# Deliberately no registry login, image push or production release.

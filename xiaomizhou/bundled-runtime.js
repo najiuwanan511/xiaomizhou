@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { qqFramework } from './napcat-manager.js';
 
 function writeJson(file, value, mode = 0o600) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -13,11 +14,12 @@ function writeJson(file, value, mode = 0o600) {
 
 // Run once in the image's parent launcher. Secrets never enter the browser or
 // container command line, and remain stable across upgrades and restarts.
-export function prepareBundledRuntime({ dataDir, appPort, runtimeDir = '/opt/xiaomizhou-napcat', qqDir = '/opt/QQ' }) {
+export function prepareBundledRuntime({ dataDir, appPort, framework = 'napcat', runtimeDir = `/opt/xiaomizhou-${framework}`, qqDir = '/opt/QQ' }) {
+  qqFramework(framework);
   for (const file of [path.join(runtimeDir, 'napcat.mjs'), path.join(runtimeDir, 'node_modules/express/package.json'), path.join(qqDir, 'qq'), path.join(qqDir, 'resources/app/package.json'), path.join(qqDir, 'resources/app/wrapper.node')]) {
     if (!fs.existsSync(file)) throw new Error(`内置 QQ 运行文件缺失：${file}。请重新构建完整小米粥镜像`);
   }
-  const privateFile = path.join(dataDir, 'napcat-private.json');
+  const privateFile = path.join(dataDir, `${framework}-private.json`);
   let secrets;
   try { secrets = JSON.parse(fs.readFileSync(privateFile, 'utf8')); }
   catch (error) {
@@ -26,8 +28,8 @@ export function prepareBundledRuntime({ dataDir, appPort, runtimeDir = '/opt/xia
     writeJson(privateFile, secrets);
   }
   if (!/^[a-f0-9]{64}$/.test(secrets.webuiToken || '')) throw new Error('内置 QQ 密钥格式无效，请恢复数据备份');
-  const workdir = path.join(dataDir, 'napcat');
-  const home = path.join(dataDir, 'qq-home');
+  const workdir = path.join(dataDir, framework);
+  const home = path.join(dataDir, framework === 'napcat' ? 'qq-home' : 'snowcat-qq-home');
   fs.mkdirSync(workdir, { recursive: true, mode: 0o700 });
   fs.mkdirSync(home, { recursive: true, mode: 0o700 });
   const configFile = path.join(workdir, 'config/webui.json');
@@ -46,14 +48,15 @@ export function prepareBundledRuntime({ dataDir, appPort, runtimeDir = '/opt/xia
   const shippedPlugins = path.join(runtimeDir, 'plugins');
   const plugins = path.join(workdir, 'plugins');
   if (fs.existsSync(shippedPlugins) && !fs.existsSync(plugins)) fs.cpSync(shippedPlugins, plugins, { recursive: true });
-  const statusFile = path.join(dataDir, 'napcat-runtime.json');
+  const statusFile = path.join(dataDir, `${framework}-runtime.json`);
   const env = {
+    QQ_FRAMEWORK: framework,
     NAPCAT_BUNDLED: '1', NAPCAT_WEBUI_URL: 'http://127.0.0.1:6099',
     NAPCAT_WEBUI_TOKEN: secrets.webuiToken, NAPCAT_ONEBOT_URL: 'http://127.0.0.1:3000',
     NAPCAT_CALLBACK_BASE_URL: `http://127.0.0.1:${appPort}`, NAPCAT_STATUS_FILE: statusFile
   };
   const childEnv = {
-    ...process.env, HOME: home, XDG_CONFIG_HOME: path.join(home, '.config'),
+    ...process.env, QQ_FRAMEWORK: framework, HOME: home, XDG_CONFIG_HOME: path.join(home, '.config'),
     NAPCAT_WORKDIR: workdir, NAPCAT_WEBUI_SECRET_KEY: secrets.webuiToken,
     NAPCAT_WEBUI_PREFERRED_PORT: '6099', NAPCAT_DISABLE_PIPE: '1',
     NAPCAT_DISABLE_MULTI_PROCESS: '1', NAPCAT_QQ_PACKAGE_INFO_PATH: path.join(qqDir, 'resources/app/package.json'),
@@ -95,7 +98,7 @@ export function createRuntimeSupervisor({ command, args, childEnv, statusFile, s
       if (stopping) { publish({ state: 'stopped', pid: null }); return; }
       failures = failures.filter(time => Date.now() - time < 60000);
       failures.push(Date.now());
-      if (failures.length >= 5) { publish({ state: 'failed', pid: null, error: 'QQ 内核连续退出，已暂停重启；请检查 data/napcat/logs 后点击重启内核' }); return; }
+      if (failures.length >= 5) { publish({ state: 'failed', pid: null, error: `QQ 内核连续退出，已暂停重启；请检查 data/${childEnv.QQ_FRAMEWORK || 'napcat'}/logs 后点击重启内核` }); return; }
       publish({ state: 'restarting', pid: null, restarts: state.restarts + 1, error: `QQ 内核退出（${code ?? exitSignal ?? 'unknown'}），正在重新启动` });
       timer = setTimeout(start, restartDelay);
     });

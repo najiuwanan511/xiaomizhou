@@ -7,8 +7,8 @@ const starter = `function handle(event, api) {
     api.reply('你好，我是你的机器人。');
   }
 }`;
-const icons = { overview: 'layout-dashboard', ai: 'brain-circuit', plugins: 'blocks', editor: 'code-xml', qq: 'message-circle', qqbot: 'bot', weixin: 'messages-square', forwards: 'forward', rebates: 'link-2', logs: 'scroll-text', settings: 'settings-2', updates: 'download' };
-const names = { overview: '概览', ai: 'AI 大脑', plugins: '插件管理', editor: '本地开发', qq: '个人 QQ', qqbot: 'QQ 机器人', weixin: '微信接入', forwards: '转发规则', rebates: '返利转链', logs: '运行日志', settings: '系统设置', updates: '在线更新' };
+const icons = { overview: 'layout-dashboard', ai: 'brain-circuit', plugins: 'blocks', editor: 'code-xml', qq: 'message-circle', qqbot: 'bot', weixin: 'messages-square', forwards: 'forward', rebates: 'link-2', videos: 'video', logs: 'scroll-text', settings: 'settings-2', updates: 'download' };
+const names = { overview: '概览', ai: 'AI 大脑', plugins: '插件管理', editor: '本地开发', qq: '个人 QQ', qqbot: 'QQ 机器人', weixin: '微信接入', forwards: '转发规则', rebates: '返利转链', videos: '视频解析', logs: '运行日志', settings: '系统设置', updates: '在线更新' };
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const icon = name => `<i data-lucide="${name}" aria-hidden="true"></i>`;
 function iconsReady() { window.lucide?.createIcons(); }
@@ -193,6 +193,42 @@ async function rebates() {
   document.querySelector('#rebate-test').onclick = async () => { if (rebateDirty) return; const out = document.querySelector('#rebate-result'); out.textContent = '正在请求已保存的转链接口…'; document.querySelector('#rebate-test').disabled = true; try { const result = await api('/rebates/convert', { method: 'POST', body: { url: document.querySelector('#rebate-url').value } }); out.textContent = `${labels[result.platform]} · ${result.provider === 'zhetaoke' ? (result.platform === 'taobao' ? '折淘客' : '折京客') : '官方接口'}\n${result.formattedText}${result.imageUrl ? `\n商品图片：${result.imageUrl}` : ''}`; } catch(e) { out.textContent = `转链失败：${e.message}`; } finally { document.querySelector('#rebate-test').disabled = rebateDirty; } }; iconsReady();
   document.querySelector('#rebate-auto-save').onclick = async () => { try { await api('/rebates/automation', { method: 'PUT', body: { enabled: document.querySelector('#rebate-auto-enabled').checked, reply: document.querySelector('#rebate-auto-reply').checked, image: document.querySelector('#rebate-auto-image').checked, template: document.querySelector('#rebate-template').value } }); toast('自动转链设置已保存'); rebates(); } catch(e) { toast(e.message); } };
 }
+async function videos() {
+  const config = await api('/videos');
+  const platforms = { douyin: '抖音', kuaishou: '快手', pipixia: '皮皮虾（仅明确的无水印原片）' };
+  shell(`${heading('视频解析', '直接识别个人 QQ 收到的视频分享链接，回复无水印视频和原平台标题')}<div class="two-col"><section class="panel pad"><div class="section-head"><h2>自动识别</h2><span class="pill ${config.enabled ? '' : 'off'}">${config.enabled ? '已启用' : '未启用'}</span></div><p class="muted">无需输入“解析”等命令。收到支持的链接后，先发送视频，再发送原平台标题，标题不加前缀或分享广告。</p><div class="field"><label class="switch"><input id="video-enabled" type="checkbox" ${config.enabled ? 'checked' : ''}> 启用自动视频解析</label><label class="switch"><input id="video-private" type="checkbox" ${config.privateEnabled ? 'checked' : ''}> 在私聊中自动回复</label></div><div class="field"><label>支持平台</label>${Object.entries(platforms).map(([key, label]) => `<label class="switch"><input type="checkbox" data-video-platform="${key}" ${config.platforms.includes(key) ? 'checked' : ''}> ${label}</label>`).join('')}</div><div class="field"><label for="video-groups">允许的 QQ 群号</label><textarea id="video-groups" rows="3" placeholder="留空表示所有群；多个群号用换行或逗号分隔">${escapeHtml(config.groupIds.join('\n'))}</textarea><small>只在这些群回复；私聊由上面的开关单独控制。</small></div><div class="field"><label for="video-size">单个视频大小上限（MB）</label><input id="video-size" type="number" min="1" max="50" value="${config.maxSizeMB}"><small>默认 20 MB，最大 50 MB；超过上限会提示失败，不发送带水印的备用文件。</small></div><div class="field"><label for="video-cookie">抖音网页 Cookie（分享页缺少数据时使用）</label><input id="video-cookie" type="password" autocomplete="off" value="${escapeHtml(config.douyinCookie)}" placeholder="可选：填写自己的抖音网页 Cookie"><small>仅发送给抖音官方详情接口；留空并保存可清除。Cookie 会过期，请勿在聊天中发送。</small></div><button class="btn primary" id="video-save">${icon('save')} 保存设置</button></section><section class="panel pad"><div class="section-head"><h2>测试分享链接</h2><span class="pill off">不发送 QQ 消息</span></div><div class="field"><label for="video-link">分享链接或完整分享文案</label><textarea id="video-link" rows="4" placeholder="粘贴抖音、快手、皮皮虾的视频分享链接"></textarea></div><button class="btn" id="video-test">${icon('play')} 测试解析</button><div class="result" id="video-result" style="margin-top:16px">测试会获取原平台标题并下载视频，检查文件格式和大小。</div><p class="help" style="margin-top:18px">解析优先处理每条消息中的第一个支持链接，同一条消息不会再触发 AI、插件或转发规则。支持文字链接及常见 QQ 分享卡片；合并聊天记录暂不解析。皮皮虾普通接口可能返回带水印版本，无法确认原片时会提示失败。平台改版、验证和私密作品可能无法解析，作者压入画面的水印也无法去除。</p></section></div>`);
+  document.querySelector('#video-save').onclick = async () => {
+    const button = document.querySelector('#video-save');
+    button.disabled = true;
+    try {
+      await api('/videos', { method: 'PUT', body: {
+        enabled: document.querySelector('#video-enabled').checked,
+        privateEnabled: document.querySelector('#video-private').checked,
+        platforms: [...document.querySelectorAll('[data-video-platform]:checked')].map(input => input.dataset.videoPlatform),
+        groupIds: document.querySelector('#video-groups').value.split(/[\s,，;；]+/).filter(Boolean),
+        maxSizeMB: Number(document.querySelector('#video-size').value),
+        douyinCookie: document.querySelector('#video-cookie').value
+      } });
+      toast('视频解析设置已保存');
+      const pill = document.querySelector('.section-head .pill');
+      pill.textContent = document.querySelector('#video-enabled').checked ? '已启用' : '未启用';
+      pill.classList.toggle('off', !document.querySelector('#video-enabled').checked);
+    } catch (e) { toast(e.message); }
+    finally { button.disabled = false; }
+  };
+  document.querySelector('#video-test').onclick = async () => {
+    const button = document.querySelector('#video-test');
+    const out = document.querySelector('#video-result');
+    button.disabled = true;
+    out.textContent = '正在解析并下载视频，请稍候…';
+    try {
+      const result = await api('/videos/test', { method: 'POST', body: { text: document.querySelector('#video-link').value } });
+      out.textContent = `平台：${result.platformName}\n视频大小：${(result.sizeBytes / 1048576).toFixed(1)} MB\n\nQQ 回复文案：\n${result.title}`;
+    } catch (e) { out.textContent = `解析失败：${e.message}`; }
+    finally { button.disabled = false; }
+  };
+  iconsReady();
+}
 async function logs() {
   shell(`${heading('运行日志', '查看系统、消息渠道和插件的运行情况')}${logPanel('system-logs', '运行记录', '按级别和模块筛选，显示最近 100 条匹配记录。个人 QQ 页面另有独立日志。', { escapeHtml, icon })}`);
   disposePage = bindLogPanel({ id: 'system-logs', api, escapeHtml, date, active: () => state.page === 'logs' && state.bootstrap.authenticated });
@@ -241,5 +277,5 @@ async function updates() {
   };
   iconsReady();
 }
-async function render() { disposePage?.(); disposePage = null; try { if (!state.bootstrap) state.bootstrap = await api('/bootstrap'); if (!state.bootstrap.authenticated) return authView(); await ({ overview, ai, plugins, editor, qq, qqbot, weixin, forwards, rebates, logs, settings, updates }[state.page] || overview)(); } catch(e) { app.innerHTML = `<div class="auth-wrap"><div class="auth"><h1>无法加载控制台</h1><p>${escapeHtml(e.message)}</p><button class="btn" onclick="location.reload()">重试</button></div></div>`; } }
+async function render() { disposePage?.(); disposePage = null; try { if (!state.bootstrap) state.bootstrap = await api('/bootstrap'); if (!state.bootstrap.authenticated) return authView(); await ({ overview, ai, plugins, editor, qq, qqbot, weixin, forwards, rebates, videos, logs, settings, updates }[state.page] || overview)(); } catch(e) { app.innerHTML = `<div class="auth-wrap"><div class="auth"><h1>无法加载控制台</h1><p>${escapeHtml(e.message)}</p><button class="btn" onclick="location.reload()">重试</button></div></div>`; } }
 render();
