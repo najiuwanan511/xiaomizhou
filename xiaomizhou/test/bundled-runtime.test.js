@@ -3,12 +3,51 @@ import test from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { prepareBundledRuntime, createRuntimeSupervisor, bundledRuntimeStatus } from '../bundled-runtime.js';
+import { prepareBundledRuntime, createRuntimeSupervisor, bundledRuntimeStatus, createKernelController, kernelEnabled } from '../bundled-runtime.js';
 
 const waitUntil = async predicate => {
   for (let i = 0; i < 200; i++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 20)); }
   assert.fail('runtime condition did not become true');
 };
+
+test('kernel stop releases a real process, survives controller recreation and start restores it', async t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xmz-kernel-'));
+  const marker = path.join(dataDir, 'starts');
+  let count = 0, controller;
+  const createSupervisor = () => {
+    count++;
+    return createRuntimeSupervisor({ command: process.execPath, args: ['-e', "require('fs').appendFileSync(process.argv[1],process.pid+'\\n');setInterval(()=>{},1000)", marker], childEnv: process.env, statusFile: path.join(dataDir, 'snowcat-runtime.json'), restartDelay: 10, stopTimeout: 500 });
+  };
+  t.after(async () => { await controller?.shutdown(); fs.rmSync(dataDir, { recursive: true, force: true }); });
+  controller = createKernelController({ dataDir, createSupervisor });
+  await controller.initialize();
+  await waitUntil(() => fs.existsSync(marker));
+  const firstPid = controller.status().pid;
+  const stopping = controller.run('stop');
+  await assert.rejects(controller.run('start'), error => error.status === 409);
+  await stopping;
+  assert.equal(kernelEnabled(dataDir), false);
+  assert.equal(controller.status().state, 'stopped');
+  assert.throws(() => process.kill(firstPid, 0), /ESRCH|no such process/i);
+  await assert.rejects(controller.run('restart'), error => error.status === 409);
+  await controller.shutdown();
+  controller = createKernelController({ dataDir, createSupervisor });
+  await controller.initialize();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(fs.readFileSync(marker, 'utf8').trim().split('\n').length, 1);
+  assert.equal(controller.status().state, 'stopped');
+  await controller.run('start');
+  await waitUntil(() => fs.readFileSync(marker, 'utf8').trim().split('\n').length === 2);
+  assert.equal(kernelEnabled(dataDir), true);
+  const secondPid = controller.status().pid;
+  const creations = count;
+  await controller.run('start');
+  assert.equal(count, creations, 'already started is idempotent');
+  await controller.shutdown();
+  assert.equal(kernelEnabled(dataDir), true, 'application shutdown preserves user preference');
+  assert.throws(() => process.kill(secondPid, 0), /ESRCH|no such process/i);
+  await assert.rejects(controller.run('start'), error => error.status === 409);
+});
 
 test('complete runtime refuses missing payloads and prepares persistent local-only configuration', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaomizhou-bundle-'));
@@ -24,7 +63,7 @@ test('complete runtime refuses missing payloads and prepares persistent local-on
   assert.equal(first.env.NAPCAT_CALLBACK_BASE_URL, 'http://127.0.0.1:8090');
   assert.match(first.env.NAPCAT_WEBUI_TOKEN, /^[a-f0-9]{64}$/);
   assert.ok(!JSON.stringify(first.args).includes(first.env.NAPCAT_WEBUI_TOKEN));
-  const configFile = path.join(dataDir, 'napcat/config/webui.json');
+  const configFile = path.join(dataDir, 'snowcat/config/webui.json');
   const config = JSON.parse(fs.readFileSync(configFile));
   assert.equal(config.host, '127.0.0.1'); assert.equal(config.port, 6099);
   config.autoLoginAccount = '12345'; fs.writeFileSync(configFile, JSON.stringify(config));
@@ -33,8 +72,8 @@ test('complete runtime refuses missing payloads and prepares persistent local-on
   assert.equal(second.env.NAPCAT_CALLBACK_BASE_URL, 'http://127.0.0.1:8091');
   assert.equal(JSON.parse(fs.readFileSync(configFile)).autoLoginAccount, '12345');
   assert.deepEqual(second.args.slice(-2), ['-q', '12345']);
-  assert.ok(fs.existsSync(path.join(dataDir, 'napcat/config/onebot11.json')));
-  fs.writeFileSync(path.join(dataDir, 'napcat-private.json'), 'broken');
+  assert.ok(fs.existsSync(path.join(dataDir, 'snowcat/config/onebot11.json')));
+  fs.writeFileSync(path.join(dataDir, 'snowcat-private.json'), 'broken');
   assert.throws(() => prepareBundledRuntime({ runtimeDir, qqDir, dataDir, appPort: 8090 }), /密钥文件损坏/);
 });
 

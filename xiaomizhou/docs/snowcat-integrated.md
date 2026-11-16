@@ -1,16 +1,14 @@
-# SnowCat 实验适配
+# SnowCat 单内核与启停
 
-当前为开发分支功能，未替换正式版 NapCat，未发布 SnowCat 镜像。现有 v0.3.20 安装命令仍安装 NapCat。
+开发分支已删除 NapCat 运行包和更新器，只保留 SnowCat。尚未发布正式 SnowCat 镜像，旧 v0.3.20 安装命令仍安装 NapCat。
 
-## 已实现
+## 使用方式
 
-- 个人 QQ 的连接配置可选择 NapCat 或 SnowCat，继续使用 OneBot v11 收发协议。
-- 管理接口支持状态、扫码、刷新二维码、接通消息、保存快速登录账号。
-- 区分等待扫码、已确认并初始化中、在线和掉线。掉线或初始化时不再显示旧二维码，也不会提前写入消息配置。
-- 切换外部框架或管理连接后停用旧消息连接，成功接通新框架后恢复。
-- 内置模式通过环境变量 `QQ_FRAMEWORK=napcat|snowcat` 选择内核，默认 NapCat；需要包含适配启动器的完整镜像，不能只更新网页。
-- SnowCat 使用 `data/snowcat`、`data/snowcat-qq-home`、`data/snowcat-private.json` 和 `data/snowcat-runtime.json`，保留原 NapCat 数据。
-- 内置 SnowCat 可从页面请求重启；禁用 NapCat 独立更新接口，避免把 NapCat 包装到 SnowCat 目录中。SnowCat 暂需重新构建完整镜像更新。
+进入「个人 QQ」可扫码、查看状态，并使用「启动内核」「停止内核」「重启内核」。停止会结束 QQ/Xvfb 进程，保留登录数据。关闭偏好写入数据卷的 qq-kernel-control.json，重启容器后继续保持关闭；启动后重新读取已保存的快速登录账号。
+
+主动停止期间不进行内核状态网络轮询、个人 QQ 消息重试或掉线提醒。QQ 再次上线后重新开始掉线监测。QQ 官方机器人、企业微信、插件管理等其他功能继续运行。已经交给通知渠道的通知无法撤回。
+
+本次必须更换完整镜像，旧版后台在线更新不能替换父进程启动器和运行包。原数据卷中历史 NapCat 登录文件不主动删除，新内核使用独立的 data/snowcat、data/snowcat-qq-home 与私有密钥文件。
 
 ## 版本选择与上游凭证回归
 
@@ -31,41 +29,28 @@ node scripts/check-snowcat-auth.js data/snowcat-source --require-working
 
 小米粥不会跳过鉴权或关闭上游两步验证。开启两步验证的外部内核暂只能使用已配置好的手动 OneBot 接入。对于反复签发无效凭证的内核，后台会暂缓登录重试，避免每次轮询耗尽上游登录次数。
 
-## Linux 构建验证
+## 构建与验证
 
-2026-11-16 已在 GitHub Ubuntu runner 的 Linux x86_64 容器通过：
-
-- 小米粥 98 项自动化测试。
-- 锁定官方 v6.0.0 的真实鉴权函数检查。
-- 完整 QQ 基础镜像、SnowCat WebUI 和 Shell 运行包构建。
-- 真实 QQ + SnowCat 启动，并通过小米粥的管理接口取得可显示的真实登录二维码。未登录任何 QQ 账号。
-
-[成功运行记录](https://github.com/najiuwanan511/xiaomizhou/actions/runs/43853523544)，运行代码提交 `831b89fb984f7a37fe68c976fd5290e79709664d`。这证明该 Linux 组合可启动并进入扫码阶段，不代表已经通过飞牛实机或账号稳定收发验收。
-
-`Dockerfile.snowcat` 在完整小米粥镜像上加入未修改的 SnowCat Shell、Linux 原生库及 WebUI，沿用已经锁定的 Linux QQ 3.2.34-53644。源码地址、提交、压缩包大小及 SHA-256 锁定在 `napcat-runtime.lock.json` 的 `snowcat` 字段。
+在应用目录、Linux x86_64 Docker 环境执行：
 
 ```bash
-base="$(node scripts/prepare-napcat-image.js)"
-docker build -f Dockerfile.bundled --build-arg "NAPCAT_BASE_IMAGE=$base" -t xiaomizhou/qq-experiment:local .
-docker build -f Dockerfile.snowcat --build-arg XIAOMIZHOU_BASE_IMAGE=xiaomizhou/qq-experiment:local -t xiaomizhou/snowcat-experiment:local .
-```
-
-构建只执行上游 `build:webui` 和 `build:shell` 运行包目标。官方标签的插件 SDK 声明生成目标另有类型解析错误，SDK 不参与 Shell/WebUI 运行，也不随本实验镜像发布；不修改源码来修复或掩盖它。
-
-在 Intel/AMD x86_64 飞牛设备上自行构建后，可用独立项目启动测试：
-
-```bash
+base="$(node scripts/prepare-qq-image.js)"
+docker build -f Dockerfile.bundled --build-arg "QQ_BASE_IMAGE=$base" -t xiaomizhou/snowcat-experiment:local .
 docker compose -p xiaomizhou-snowcat-test -f compose.snowcat.yml up -d
 ```
 
-访问 `http://飞牛IP:18090`。此配置使用单独的测试数据卷，不覆盖原配置；试用同一个 QQ 账号前停用原 QQ 内核，避免两边同时登录。当前没有可直接拉取的 SnowCat 实验镜像，不能把正式 v0.3.20 镜像加上环境变量就当作已安装 SnowCat。
+访问 http://飞牛IP:18090。试用配置使用独立数据卷。当前没有可直接拉取的 SnowCat 镜像，必须自行构建。不要将正式 v0.3.20 加环境变量当作 SnowCat 版本。
 
-GitHub Actions 的 `SnowCat experiment` 分别检查适配测试、上游真实鉴权实现、完整 Linux 镜像构建及真实二维码。只使用临时测试容器，不上传镜像、不创建正式 Release。鉴权失败或无法生成二维码时必须报告失败。
+qq-runtime.lock.json 固定 SnowCat 源码提交、SHA-256、大小及 Linux QQ 版本。旧 NapCat 发行归档仅作为提取 Linux QQ 的构建输入，最终镜像不复制 NapCat 目录或 Shell ZIP。SnowCat 上游仍使用 napcat.mjs、config/napcat.json 和 NAPCAT_* 名称，这些属于 SnowCat 原始接口，并非混入第二套内核。
 
-扫码图片生成不等于账号已经登录。个人账号实际扫码、群聊和私聊的文字/图片/视频收发、掉线提醒及长期稳定性仍需真实账号验收，当前未通过。SnowCat 同样使用 QQ 运行时注入，不能保证避免“外挂检测”或踢下线。
+构建只执行上游 build:webui 和 build:shell。官方标签的插件 SDK 声明目标存在类型解析错误，SDK 不参与 Shell/WebUI 运行，不随镜像发布。
 
-## 许可与回退
+上一版适配已通过 98 项测试、Linux x86_64 构建和真实 QQ/SnowCat 登录二维码检查（[记录](https://github.com/najiuwanan511/xiaomizhou/actions/runs/43853523544)）。本次单内核与启停验收正在进行；CI 增加最终镜像无 NapCat、停止后 QQ/Xvfb 退出及端口关闭、重启容器保持关闭、重新启动恢复真实二维码的检查。
 
-上游使用 Limited Redistribution License for NapCat，包含非商业使用、保留完整许可与来源，以及修改代码公开发布的限制。本适配通过小米粥外部启动器和协议接口接入，不改上游内核；实验镜像保留完整 LICENSE 和固定提交来源。
+GitHub Actions 的 SnowCat experiment 仅使用临时容器，不上传镜像、不创建正式 Release。真实账号扫码、文字/图片/视频收发、掉线提醒与长期稳定性仍需实机验收。SnowCat 同样使用 QQ 运行时注入，不能保证避免外挂检测。
 
-实验验证不使用现有生产数据卷。将来实机切换前先停止原容器并备份整个数据卷，确保同一数据卷只被一个小米粥容器使用。含双内核的实验镜像可用 `QQ_FRAMEWORK=napcat` 并重新创建容器回退，也可恢复原正式镜像；不要删除数据卷。
+## 许可与数据保护
+
+SnowCat 使用 Limited Redistribution License for NapCat，包含非商业、保留完整许可和来源、修改代码公开发布等限制。本适配通过外部启动器和协议接口接入，不修改上游内核；镜像保留 LICENSE 和固定来源记录。
+
+升级前停止原容器并备份整个数据卷，同一卷只允许一个小米粥容器使用。需要回退时恢复原镜像和备份数据；新镜像不再提供内核选择。不要删除数据卷。

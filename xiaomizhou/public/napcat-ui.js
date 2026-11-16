@@ -36,11 +36,9 @@ export function bindLogPanel({ id, api, escapeHtml, date, active, personal = fal
 export async function renderNapcat({ api, shell, heading, icon, escapeHtml, date, toast, active, reload }) {
   const [config, qq, settings, notificationConfig] = await Promise.all([api('/napcat'), api('/qq'), api('/settings'), api('/qq/notifications')]);
   if (!active()) return () => {};
-  const snowcat = config.framework === 'snowcat';
-  const coreName = snowcat ? 'SnowCat' : 'NapCat';
-  const canUpdateCore = config.bundled && !snowcat;
+  const coreName = 'SnowCat';
   shell(`${heading(`个人 QQ · ${coreName}`, '扫码登录 QQ，查看在线状态并接通消息收发')}
-    ${snowcat ? '<div class="notice">SnowCat 为实验适配，采用官方 v6.0.0 固定源码。Linux x86_64 已通过启动与真实登录二维码检查，飞牛实机扫码及账号收发仍需验证。切换框架不能保证避免 QQ 风控掉线。</div>' : ''}
+    <div class="notice">SnowCat 为实验适配，采用官方 v6.0.0 固定源码。Linux x86_64 已通过启动与真实登录二维码检查，飞牛实机扫码及账号收发仍需验证。更换内核不能保证避免 QQ 风控掉线。</div>
     <div class="two-col napcat-panels">
       <section class="panel pad">
         <div class="section-head"><h2>QQ 扫码登录</h2><span class="pill off" id="napcat-state">正在检查</span></div>
@@ -60,17 +58,19 @@ export async function renderNapcat({ api, shell, heading, icon, escapeHtml, date
         <p class="muted">完整 QQ 运行环境和 ${coreName} 内核随小米粥镜像一起安装，由小米粥自动启动、连接和恢复。</p>
         <div class="notice">连接地址、密钥和消息回调均由小米粥内部管理。</div>
         <p class="help section">登录数据随小米粥数据目录持久保存。QQ 掉线且无法重新扫码时，可重启内核；现有插件和转发规则会保留。</p>
-        <button class="btn" id="napcat-restart">${icon('refresh-cw')} 重启 QQ 内核</button><hr>
-        ${canUpdateCore ? `<div class="section-head"><h2>NapCat 在线更新</h2><span class="pill" id="napcat-version">读取中</span></div><p id="napcat-update-status" class="muted" role="status">正在读取更新状态…</p><div class="row"><button class="btn" id="napcat-update-check">检查更新</button><button class="btn primary" id="napcat-update-install" hidden>升级 NapCat</button><button class="btn" id="napcat-update-rollback" hidden>回滚上一版</button></div><p class="help">升级会短暂中断 QQ 消息。下载校验后重启内核，启动检查失败自动恢复旧版与配置。跨大版本或配套 QQ 环境变化时需升级完整镜像。</p>` : '<h2>SnowCat 更新</h2><p class="muted">实验内核暂不支持独立在线更新，需重新构建完整镜像。配置与 QQ 登录数据和 NapCat 分开保存，切回原镜像即可使用原 NapCat 数据。</p>'}
+        <div class="row"><button class="btn primary" id="napcat-start" disabled>启动内核</button><button class="btn" id="napcat-stop" disabled>停止内核</button><button class="btn" id="napcat-restart" disabled>重启内核</button></div>
+        <p class="help">不用 QQ 时可停止内核，释放 QQ 进程占用的内存。登录数据保留，重启小米粥后仍保持关闭；主动停止期间暂停掉线提醒和消息重试。</p>
+        <p class="muted">SnowCat 随完整镜像更新。</p>
+        ${config.runtimeControl ? '' : '<p class="alert">当前启动器不支持启停，请更新完整镜像。</p>'}
       </section>` : ''}
       <section class="panel pad" ${config.bundled ? 'hidden' : ''}>
         <div class="section-head"><h2>QQ 框架连接配置</h2></div>
-        <p class="muted">所选框架需已在其他设备或容器运行，并提供兼容的 WebUI 与 OneBot v11 接口。</p>
+        <p class="muted">SnowCat需已在其他设备或容器运行，并提供兼容的 WebUI 与 OneBot v11 接口。</p>
         <form id="napcat-form">
-          <div class="field"><label for="napcat-framework">QQ 框架</label><select id="napcat-framework"><option value="napcat" ${!snowcat ? 'selected' : ''}>NapCat</option><option value="snowcat" ${snowcat ? 'selected' : ''}>SnowCat（实验适配）</option></select><small>切换后请填写新框架地址和令牌。保存会停用旧消息连接，再扫码并接通新框架。</small></div>
-          <div class="field"><label for="napcat-url">内核管理地址</label><input id="napcat-url" type="url" value="${escapeHtml(config.webuiUrl)}" placeholder="http://qq-core:6099" required><small>填写小米粥服务能访问的所选框架 WebUI 地址。</small></div>
+          <p class="muted">QQ 内核：SnowCat</p>
+          <div class="field"><label for="napcat-url">内核管理地址</label><input id="napcat-url" type="url" value="${escapeHtml(config.webuiUrl)}" placeholder="http://qq-core:6099" required><small>填写小米粥服务能访问的SnowCat WebUI 地址。</small></div>
           <div class="field"><label for="napcat-token">内核 WebUI Token</label><input id="napcat-token" type="password" autocomplete="off" value="${escapeHtml(config.webuiToken)}" required><small>用于管理和扫码登录，与消息 API 的 Access Token 不同。</small></div>
-          <div class="field"><label for="napcat-onebot">消息 API 地址</label><input id="napcat-onebot" type="url" value="${escapeHtml(config.onebotUrl)}" placeholder="http://napcat:3000"><small>自动接通时创建此端口的消息服务；留空使用管理地址的主机和 3000 端口。</small></div>
+          <div class="field"><label for="napcat-onebot">消息 API 地址</label><input id="napcat-onebot" type="url" value="${escapeHtml(config.onebotUrl)}" placeholder="http://qq-core:3000"><small>自动接通时创建此端口的消息服务；留空使用管理地址的主机和 3000 端口。</small></div>
           <div class="field"><label for="napcat-callback">小米粥访问地址</label><input id="napcat-callback" type="url" value="${escapeHtml(config.callbackBaseUrl || location.origin)}" placeholder="http://xiaomizhou:8090" required><small>填写 QQ 内核能访问的小米粥地址。同一套容器部署可用 http://xiaomizhou:8090。</small></div>
           <button class="btn primary" id="napcat-save" type="submit">${icon('save')} 保存并连接</button>
           <p class="muted" id="napcat-config-status" role="status">当前显示的是已保存配置</p>
@@ -104,9 +104,9 @@ export async function renderNapcat({ api, shell, heading, icon, escapeHtml, date
       <p class="help">只检测个人 QQ；QQ 等待重新扫码、内核服务不可达或鉴权异常也会计入持续异常。发送失败会自动重试。小米粥容器必须保持运行且能够访问通知渠道；整个 NAS 关机或断网时，无法即时向外发送通知。</p>
     </section>
     <details class="panel pad section" id="qq-manual" ${config.bundled ? 'hidden' : ''}><summary>手动接入与排错</summary><div class="two-col section">
-      <div><div class="field"><label for="qq-endpoint">HTTP API 地址</label><input id="qq-endpoint" value="${escapeHtml(qq.endpoint)}" placeholder="http://napcat:3000"></div><div class="field"><label for="qq-token">消息 API Access Token</label><input id="qq-token" type="password" autocomplete="off" value="${escapeHtml(qq.accessToken)}"></div><div class="field"><label class="switch"><input id="qq-enabled" type="checkbox" ${qq.enabled ? 'checked' : ''}> 启用消息接收</label></div><div class="row"><button class="btn" id="qq-save">保存手动配置</button><button class="btn" id="qq-test">测试消息连接</button></div><p id="qq-result" class="muted" role="status">${escapeHtml(qq.lastError || '已有 OneBot v11 消息服务可以在此手动接入')}</p></div>
+      <div><div class="field"><label for="qq-endpoint">HTTP API 地址</label><input id="qq-endpoint" value="${escapeHtml(qq.endpoint)}" placeholder="http://qq-core:3000"></div><div class="field"><label for="qq-token">消息 API Access Token</label><input id="qq-token" type="password" autocomplete="off" value="${escapeHtml(qq.accessToken)}"></div><div class="field"><label class="switch"><input id="qq-enabled" type="checkbox" ${qq.enabled ? 'checked' : ''}> 启用消息接收</label></div><div class="row"><button class="btn" id="qq-save">保存手动配置</button><button class="btn" id="qq-test">测试消息连接</button></div><p id="qq-result" class="muted" role="status">${escapeHtml(qq.lastError || '已有 OneBot v11 消息服务可以在此手动接入')}</p></div>
       <div><div class="field"><label for="qq-callback">HTTP POST 回调地址</label><input id="qq-callback" class="mono" readonly value="${escapeHtml(`${config.callbackBaseUrl || location.origin}/api/qq/events?token=${settings.webhookToken}`)}"><small>包含接入令牌，请妥善保管。自动接通时会写入所选 QQ 内核。</small></div><p class="help">手动配置不影响已有转发规则。群转发目标填写 group:群号，私聊目标填写 private:QQ号。发送 time 或“时间”可测试回复。</p></div>
-    </div></details><div class="section">${logPanel('qq-logs', '个人 QQ 日志', '仅显示个人 QQ 与所选内核的连接、消息处理、回复、转发和失败重试。保留最近 100 条匹配记录。', { escapeHtml, icon }, true)}</div>`);
+    </div></details><div class="section">${logPanel('qq-logs', '个人 QQ 日志', '仅显示个人 QQ 与SnowCat 内核的连接、消息处理、回复、转发和失败重试。保留最近 100 条匹配记录。', { escapeHtml, icon }, true)}</div>`);
 
   const element = id => document.getElementById(id);
   const panel = element('napcat-form');
@@ -115,8 +115,7 @@ export async function renderNapcat({ api, shell, heading, icon, escapeHtml, date
   let busy = false;
   let dirty = false;
   let latest = null;
-  let updateInfo = null;
-  let updateBusy = false;
+  let runtimeBusy = false;
   let statusRevision = 0;
   let pollSequence = 0;
   const current = () => alive && active() && panel.isConnected;
@@ -168,7 +167,14 @@ export async function renderNapcat({ api, shell, heading, icon, escapeHtml, date
   };
   notificationProvider(); notificationStatus();
   function buttons() {
-    element('napcat-save').disabled = busy;
+    element('napcat-save').disabled = busy || runtimeBusy;
+    if (config.bundled) {
+      const off = latest?.runtime?.enabled === false || latest?.state === 'stopped';
+      const pending = runtimeBusy || busy || !latest || !config.runtimeControl || latest?.state === 'stopping';
+      element('napcat-start').disabled = pending || (!off && latest?.runtime?.state !== 'failed');
+      element('napcat-stop').disabled = pending || off;
+      element('napcat-restart').disabled = pending || off;
+    }
     element('napcat-refresh').disabled = busy || dirty || !latest?.reachable || latest.state !== 'waiting';
     element('napcat-connect').disabled = busy || dirty || latest?.state !== 'online';
   }
@@ -176,16 +182,16 @@ export async function renderNapcat({ api, shell, heading, icon, escapeHtml, date
     if (data.notificationStatus) notificationStatus(data.notificationStatus);
     latest = data;
     if (!dirty) element('napcat-config-status').textContent = '当前显示的是已保存配置';
-    const labels = { unconfigured: '待配置', online: 'QQ 在线', offline: 'QQ 已掉线', initializing: '正在初始化', waiting: '等待扫码', 'auth-error': '鉴权失败', unreachable: '服务不可达' };
+    const labels = { stopped: '内核已停止', stopping: '正在停止', unconfigured: '待配置', online: 'QQ 在线', offline: 'QQ 已掉线', initializing: '正在初始化', waiting: '等待扫码', 'auth-error': '鉴权失败', unreachable: '服务不可达' };
     const badge = element('napcat-state');
     if (config.bundled && data.runtime) {
-      const runtimeLabels = { starting: '启动中', running: '运行中', restarting: '重启中', stopped: '已停止', failed: '启动失败', unavailable: '状态不可用' };
+      const runtimeLabels = { starting: '启动中', running: '运行中', restarting: '重启中', stopping: '停止中', stopped: '已停止', failed: '启动失败', unavailable: '状态不可用' };
       element('napcat-runtime-state').textContent = runtimeLabels[data.runtime.state] || '状态未知';
     }
     badge.textContent = labels[data.state] || '状态未知';
-    badge.className = `pill ${data.state === 'online' ? '' : data.state === 'unconfigured' ? 'off' : 'warn'}`;
-    element('napcat-service').textContent = data.reachable ? '运行中' : data.configured ? '未连接' : '未配置';
-    element('napcat-message').textContent = data.messageConnected ? '已连接' : data.state === 'online' ? '待接通' : '等待 QQ 登录';
+    badge.className = `pill ${data.state === 'online' ? '' : ['unconfigured', 'stopped'].includes(data.state) ? 'off' : 'warn'}`;
+    element('napcat-service').textContent = ['stopped', 'stopping'].includes(data.state) ? '已停止' : data.reachable ? '运行中' : data.configured ? '未连接' : '未配置';
+    element('napcat-message').textContent = ['stopped', 'stopping'].includes(data.state) ? '已暂停' : data.messageConnected ? '已连接' : data.state === 'online' ? '待接通' : '等待 QQ 登录';
     element('napcat-checked').textContent = date(data.checkedAt);
     element('napcat-event').textContent = data.lastEventAt ? date(data.lastEventAt) : '暂无';
     const image = element('napcat-qr-image');
@@ -194,27 +200,15 @@ export async function renderNapcat({ api, shell, heading, icon, escapeHtml, date
     if (hasQr && image.getAttribute('src') !== data.qrCode) image.src = data.qrCode;
     if (!hasQr) image.removeAttribute('src');
     element('napcat-qr-empty').hidden = hasQr;
-    element('napcat-qr-empty').textContent = data.state === 'online' ? '✓ 已登录' : data.state === 'offline' ? 'QQ 已掉线' : data.state === 'initializing' ? '已扫码，正在初始化' : data.state === 'unconfigured' ? '请先保存右侧连接配置' : data.reachable ? '正在等待登录二维码' : `连接 ${coreName} 后显示二维码`;
+    element('napcat-qr-empty').textContent = data.state === 'stopped' ? '内核已停止' : data.state === 'stopping' ? '正在停止内核' : data.state === 'online' ? '✓ 已登录' : data.state === 'offline' ? 'QQ 已掉线' : data.state === 'initializing' ? '已扫码，正在初始化' : data.state === 'unconfigured' ? '请先保存右侧连接配置' : data.reachable ? '正在等待登录二维码' : `连接 ${coreName} 后显示二维码`;
     const account = element('napcat-account');
     account.hidden = !data.account?.userId;
     account.textContent = data.account ? `${data.account.nickname || 'QQ'} · ${data.account.userId}` : '';
-    const hints = { online: data.messageConnected ? '消息 API 已连接。发送 time 测试消息接收与回复。' : config.bundled ? 'QQ 登录成功，正在自动接通消息…' : '已登录 QQ，点击「接通消息收发」完成连接。', offline: config.bundled ? 'QQ 已掉线。若无法自动恢复，请点击「重启 QQ 内核」重新扫码。' : 'QQ 已掉线，请检查 NapCat 日志或在 NapCat 中重新发起登录。', waiting: '请使用手机 QQ 扫码，并在手机上确认登录。', unconfigured: config.bundled ? '内置 QQ 未初始化，请检查镜像是否完整。' : '先保存 NapCat 管理地址和 WebUI Token。' };
+    const hints = { stopped: '内核已关闭，登录数据已保留。需要使用 QQ 时点击「启动内核」。', stopping: '正在结束 QQ 内核进程，请稍候。', online: data.messageConnected ? '消息 API 已连接。发送 time 测试消息接收与回复。' : config.bundled ? 'QQ 登录成功，正在自动接通消息…' : '已登录 QQ，点击「接通消息收发」完成连接。', offline: config.bundled ? 'QQ 已掉线。若无法自动恢复，请点击「重启 QQ 内核」重新扫码。' : 'QQ 已掉线，请检查 SnowCat 日志或重新发起登录。', waiting: '请使用手机 QQ 扫码，并在手机上确认登录。', unconfigured: config.bundled ? '内置 QQ 未初始化，请检查镜像是否完整。' : '先保存 SnowCat 管理地址和 WebUI Token。' };
     hints.initializing = '手机已确认登录，正在初始化 QQ 内核；请等待就绪后接通消息。';
     element('napcat-hint').textContent = (hints[data.state] || '请检查右侧连接配置，以及 QQ 内核是否正在运行。').replaceAll('NapCat', coreName);
     showError(data.autoError || data.runtime?.error || data.error);
     buttons();
-  }
-  function displayUpdate(data) {
-    updateInfo = data;
-    updateBusy = ['checking', 'downloading', 'extracting', 'switching'].includes(data.state);
-    element('napcat-version').textContent = `v${data.currentVersion}`;
-    element('napcat-update-status').textContent = `${data.message || ''}${data.state === 'downloading' ? ` · ${data.progress || 0}%` : ''}${data.latestVersion ? `（最新 v${data.latestVersion}）` : ''}`;
-    element('napcat-update-check').disabled = updateBusy;
-    element('napcat-update-install').hidden = !data.available || !data.compatible;
-    element('napcat-update-install').disabled = updateBusy;
-    element('napcat-update-rollback').hidden = !data.canRollback;
-    element('napcat-update-rollback').disabled = updateBusy;
-    element('napcat-restart').disabled = updateBusy;
   }
   async function poll() {
     clearTimeout(timer);
@@ -222,10 +216,9 @@ export async function renderNapcat({ api, shell, heading, icon, escapeHtml, date
     const sequence = ++pollSequence;
     const revision = statusRevision;
     try {
-      const [data, update] = await Promise.all([api('/napcat/status'), canUpdateCore ? api('/napcat/updates') : null]);
+      const data = await api('/napcat/status');
       if (current() && sequence === pollSequence && revision === statusRevision) {
         display(data);
-        if (update) displayUpdate(update);
       }
     } catch (error) { if (current() && sequence === pollSequence && revision === statusRevision) showError(error.message); }
     finally { if (current() && sequence === pollSequence) timer = setTimeout(poll, 4000); }
@@ -246,9 +239,8 @@ export async function renderNapcat({ api, shell, heading, icon, escapeHtml, date
         const url = new URL(element('napcat-url').value);
         url.port = '3000'; onebotUrl = url.origin;
       }
-      const saved = await api('/napcat', { method: 'PUT', body: { framework: element('napcat-framework').value, webuiUrl: element('napcat-url').value.trim(), webuiToken: element('napcat-token').value, onebotUrl, callbackBaseUrl: element('napcat-callback').value.trim() } });
+      const saved = await api('/napcat', { method: 'PUT', body: { framework: 'snowcat', webuiUrl: element('napcat-url').value.trim(), webuiToken: element('napcat-token').value, onebotUrl, callbackBaseUrl: element('napcat-callback').value.trim() } });
       if (!current()) return;
-      if ((saved.framework || 'napcat') !== (config.framework || 'napcat')) { reload(); return; }
       element('napcat-token').value = saved.webuiToken;
       element('napcat-onebot').value = saved.onebotUrl;
       element('qq-callback').value = `${saved.callbackBaseUrl}/api/qq/events?token=${settings.webhookToken}`;
@@ -295,29 +287,17 @@ export async function renderNapcat({ api, shell, heading, icon, escapeHtml, date
     try { const info = await api('/qq/test', { method: 'POST' }); if (current()) out.textContent = `已连接：${info.nickname || 'QQ'} (${info.userId})`; }
     catch (error) { if (current()) out.textContent = error.message; }
   };
-  if (config.bundled) element('napcat-restart').onclick = async () => {
-    const button = element('napcat-restart'); button.disabled = true;
-    try {
-      await api('/napcat/restart', { method: 'POST' });
-      if (current()) notice('QQ 内核正在重启，稍候即可重新扫码。');
-    } catch (error) { if (current()) showError(error.message); }
-    finally { if (current()) button.disabled = false; }
-  };
-  if (canUpdateCore) for (const action of ['check', 'install', 'rollback']) {
-    element(`napcat-update-${action}`).onclick = async () => {
-      if (updateBusy) return;
-      updateBusy = true;
-      for (const name of ['check', 'install', 'rollback']) element(`napcat-update-${name}`).disabled = true;
-      element('napcat-restart').disabled = true;
+  if (config.bundled) for (const action of ['start', 'stop', 'restart']) {
+    element(`napcat-${action}`).onclick = async () => {
+      if (runtimeBusy || busy) return;
+      runtimeBusy = true; statusRevision++; buttons(); notice(''); showError('');
       try {
-        await api(`/napcat/updates/${action}`, { method: 'POST', body: { version: updateInfo?.latestVersion || '' } });
-        if (current()) await poll();
-      } catch (error) {
-        if (current()) {
-          displayUpdate(updateInfo || {});
-          element('napcat-update-status').textContent = error.message;
-        }
-      }
+        await api(`/napcat/${action}`, { method: 'POST' });
+        if (!current()) return;
+        notice({ start: '内核已启动，正在准备 QQ 登录。', stop: '内核已停止，登录数据已保留。', restart: '内核已重启，正在准备 QQ 登录。' }[action]);
+        await poll();
+      } catch (error) { if (current()) showError(error.message); }
+      finally { if (current()) { runtimeBusy = false; buttons(); } }
     };
   }
   const disposeLogs = bindLogPanel({ id: 'qq-logs', api, escapeHtml, date, active: current, personal: true });

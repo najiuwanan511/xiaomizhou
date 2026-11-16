@@ -22,7 +22,7 @@ jobs:
         run: |
           npm install -g pnpm@11.25.0
           pnpm install --frozen-lockfile
-          node --test
+          node --test test/*.test.js
       - name: Fetch checksum-pinned upstream source
         run: node xiaomizhou/scripts/prepare-snowcat-source.js /tmp/snowcat-source
       - name: Require usable upstream WebUI credentials
@@ -35,12 +35,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Build bundled Linux QQ environment
+      - name: Build SnowCat-only Linux image
         run: |
-          base="$(node xiaomizhou/scripts/prepare-napcat-image.js)"
-          docker build -f xiaomizhou/Dockerfile.bundled --build-arg "NAPCAT_BASE_IMAGE=$base" -t xiaomizhou/qq-experiment:local xiaomizhou
-      - name: Build unchanged SnowCat Shell
-        run: docker build -f xiaomizhou/Dockerfile.snowcat --build-arg XIAOMIZHOU_BASE_IMAGE=xiaomizhou/qq-experiment:local -t xiaomizhou/snowcat-experiment:local xiaomizhou
+          base="$(node xiaomizhou/scripts/prepare-qq-image.js)"
+          docker build -f xiaomizhou/Dockerfile.bundled --build-arg "QQ_BASE_IMAGE=$base" -t xiaomizhou/snowcat-experiment:local xiaomizhou
       - name: Require real runtime and QR login
         run: |
           docker run -d --name xiaomizhou-qq-smoke --shm-size=256m -p 127.0.0.1:18090:8090 xiaomizhou/snowcat-experiment:local

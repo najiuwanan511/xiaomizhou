@@ -167,7 +167,7 @@ test('bundled backend ignores external settings and connects the logged-in QQ wi
   const port = socket.address().port; await new Promise(resolve => socket.close(resolve));
   const child = spawn(process.execPath, ['server.js'], {
     cwd: path.join(import.meta.dirname, '..'), stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, NAPCAT_BUNDLED: '1', NAPCAT_STATUS_FILE: statusFile, NAPCAT_WEBUI_URL: mock.base, NAPCAT_WEBUI_TOKEN: mock.state.token, NAPCAT_ONEBOT_URL: mock.base, NAPCAT_CALLBACK_BASE_URL: `http://127.0.0.1:${port}` }
+    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, NAPCAT_BUNDLED: '1', QQ_KERNEL_CONTROL: '1', NAPCAT_STATUS_FILE: statusFile, NAPCAT_WEBUI_URL: mock.base, NAPCAT_WEBUI_TOKEN: mock.state.token, NAPCAT_ONEBOT_URL: mock.base, NAPCAT_CALLBACK_BASE_URL: `http://127.0.0.1:${port}` }
   });
   const exited = once(child, 'exit');
   t.after(async () => { child.kill(); await exited; rmSync(dataDir, { recursive: true, force: true }); });
@@ -194,14 +194,10 @@ test('bundled backend ignores external settings and connects the logged-in QQ wi
   assert.equal(mock.state.autoLoginAccount, mock.state.info.uin);
   const state = await (await request('/api/napcat/status')).json();
   assert.equal(state.runtime.state, 'running'); assert.equal(state.runtime.pid, undefined);
-  const message = once(child, 'message');
-  assert.equal((await request('/api/napcat/restart', 'POST')).status, 202);
-  assert.equal((await message)[0].type, 'napcat-restart');
-  let accepted = true;
   child.on('message', msg => {
-    if (msg.type === 'napcat-update') child.send({ type: 'napcat-update-ack', id: msg.id, accepted });
+    if (msg.type === 'qq-kernel-control') child.send({ type: 'qq-kernel-result', id: msg.id, ok: true, enabled: true });
   });
-  assert.equal((await request('/api/napcat/updates/check', 'POST')).status, 202);
-  accepted = false;
+  assert.equal((await request('/api/napcat/restart', 'POST')).status, 200);
+  assert.equal((await request('/api/napcat/updates/check', 'POST')).status, 409);
   assert.equal((await request('/api/napcat/updates/install', 'POST')).status, 409);
 });

@@ -13,6 +13,24 @@ import { startNapcatMock } from '../napcat-mock.fixture.js';
 const config = overrides => parseQqNotificationConfig({ enabled: true, provider: 'pushplus', pushplusToken: 'test-notification-token', delaySeconds: 60, ...overrides });
 const online = { state: 'online', account: { userId: '123456789', nickname: '测试 QQ' } };
 
+test('manual kernel stop clears outage and retry state without sending offline or stale recovery', async () => {
+  let time = 1700000000000;
+  const titles = [];
+  const notifier = createQqOfflineNotifier({ getConfig: () => config(), clock: () => time, send: async (options, title) => titles.push(title) });
+  await notifier.tick(online); await notifier.tick({ state: 'offline' });
+  time += 60000;
+  await notifier.tick({ state: 'stopping' }); await notifier.tick({ state: 'stopped' });
+  assert.equal(notifier.status().armed, false);
+  assert.equal(notifier.status().offlineSince, null);
+  time += 300000;
+  await notifier.tick({ state: 'waiting' }); await notifier.tick(online);
+  assert.equal(titles.length, 0);
+  await notifier.tick({ state: 'offline' }); time += 60000; await notifier.tick({ state: 'offline' });
+  assert.equal(titles.length, 1, 'monitor rearms after real login');
+  await notifier.tick({ state: 'stopped' }); await notifier.tick(online);
+  assert.equal(titles.length, 1, 'no recovery for an intentionally ended session');
+});
+
 test('notification configuration validates channels, delay, secrets and email headers', () => {
   assert.equal(parseQqNotificationConfig({}).enabled, false);
   assert.equal(parseQqNotificationConfig({}).delaySeconds, 60);

@@ -5,20 +5,20 @@ import { spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 
 const root = path.resolve(import.meta.dirname, '..');
-const lock = JSON.parse(fs.readFileSync(path.join(root, 'napcat-runtime.lock.json')));
-const arch = process.env.NAPCAT_BUILD_ARCH || ({ x64: 'amd64', arm64: 'arm64' }[process.arch]);
+const lock = JSON.parse(fs.readFileSync(path.join(root, 'qq-runtime.lock.json')));
+const arch = process.env.QQ_BUILD_ARCH || ({ x64: 'amd64', arm64: 'arm64' }[process.arch]);
 const input = lock.images[arch];
-if (!input) throw new Error('No locked NapCat runtime image for this architecture');
-const output = path.resolve(process.env.NAPCAT_DOWNLOAD_DIR || path.join(root, 'data/build-inputs'));
+if (!input) throw new Error('No locked QQ source image for this architecture');
+const output = path.resolve(process.env.QQ_DOWNLOAD_DIR || path.join(root, 'data/build-inputs'));
 fs.mkdirSync(output, { recursive: true });
-const file = path.join(output, `napcat-docker-v${lock.version}-${arch}.tar`);
+const file = path.join(output, `napcat-docker-v${lock.qqArchiveVersion}-${arch}.tar`);
 const digest = async file => {
   const hash = crypto.createHash('sha256');
   for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
   return hash.digest('hex');
 };
 if (!fs.existsSync(file) || fs.statSync(file).size !== input.size || await digest(file) !== input.sha256) {
-  console.error(`Downloading archived NapCat ${lock.version} ${arch} (SHA-256 pinned)`);
+  console.error(`Downloading pinned Linux QQ source archive ${lock.qqArchiveVersion} ${arch} (SHA-256 pinned)`);
   const response = await fetch(input.url, { signal: AbortSignal.timeout(600000) });
   if (!response.ok) throw new Error(`Archived runtime download HTTP ${response.status}`);
   const temporary = `${file}.part`;
@@ -49,7 +49,7 @@ const configName = manifests[0].Config;
 if (configName.startsWith('-') || configName.includes('..') || !/^[a-zA-Z0-9_./-]+$/.test(configName)) throw new Error('Invalid archived image config path');
 const config = run('tar', ['-xOf', file, configName]);
 const imageId = `sha256:${crypto.createHash('sha256').update(config).digest('hex')}`;
-const tag = `xiaomizhou/napcat-runtime:${lock.version}-${arch}`;
+const tag = `xiaomizhou/qq-runtime:${lock.qqVersion}-${arch}`;
 run('docker', ['load', '--input', file]);
 // A Docker daemon using the containerd image store may expose the OCI manifest
 // digest instead of its config digest as the image ID. Prefer the archive's tag.

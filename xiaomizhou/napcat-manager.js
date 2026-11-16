@@ -7,9 +7,9 @@ import { oneBotCall } from './qq-bridge.js';
 const invalid = message => Object.assign(new Error(message), { status: 400 });
 const upstreamError = message => Object.assign(new Error(message), { status: 502 });
 
-export function qqFramework(value = 'napcat') {
-  if (!['napcat', 'snowcat'].includes(value)) throw invalid('QQ 框架只支持 NapCat 或 SnowCat');
-  return { id: value, name: value === 'snowcat' ? 'SnowCat' : 'NapCat' };
+export function qqFramework(value = 'snowcat') {
+  if (value !== 'snowcat') throw invalid('当前 QQ 内核仅支持 SnowCat');
+  return { id: 'snowcat', name: 'SnowCat' };
 }
 
 export function napcatBaseUrl(value, label) {
@@ -22,9 +22,8 @@ export function napcatBaseUrl(value, label) {
 }
 
 export function parseNapcatConfig(input, old = {}) {
-  const framework = qqFramework(input.framework ?? old.framework ?? 'napcat').id;
+  const framework = qqFramework(input.framework ?? 'snowcat').id;
   const name = qqFramework(framework).name;
-  if (framework !== (old.framework || 'napcat') && input.webuiToken === '********') throw invalid('切换 QQ 框架时请填写新框架的 WebUI Token');
   const webuiUrl = input.webuiUrl ? napcatBaseUrl(input.webuiUrl, `${name} 管理地址`) : '';
   const onebotUrl = input.onebotUrl ? napcatBaseUrl(input.onebotUrl, '消息 API 地址') : '';
   const callbackBaseUrl = input.callbackBaseUrl ? napcatBaseUrl(input.callbackBaseUrl, '小米粥访问地址') : '';
@@ -64,7 +63,7 @@ export function createNapcatManager({ getConfig, getQqConfig, fetcher = fetch })
   }
 
   async function credential(config) {
-    const key = crypto.createHash('sha256').update(`${config.framework || 'napcat'}\0${config.webuiUrl}\0${config.webuiToken}`).digest('hex');
+    const key = crypto.createHash('sha256').update(`${config.framework || 'snowcat'}\0${config.webuiUrl}\0${config.webuiToken}`).digest('hex');
     if (session?.key === key && session.expires > Date.now()) {
       if (session.error) throw session.error;
       return session.pending;
@@ -183,7 +182,7 @@ export function createNapcatManager({ getConfig, getQqConfig, fetcher = fetch })
       await call(config, 'OB11Config/SetConfig', { config: JSON.stringify(updated) });
       // Persist after NapCat accepts the config. Verification is separate from saving:
       // hot reload may briefly restart its HTTP listener.
-      saveQqConfig({ enabled: true, endpoint: config.onebotUrl, accessToken, framework: config.framework || 'napcat' });
+      saveQqConfig({ enabled: true, endpoint: config.onebotUrl, accessToken, framework: 'snowcat' });
       return { ok: true, message: `消息配置已保存，正在等待 ${qqFramework(config.framework).name} 服务生效；页面会自动检查连接` };
     } finally { connecting = false; }
   }
@@ -282,11 +281,18 @@ export async function sendQqNotification(config, title, content, { fetcher = fet
 export function createQqOfflineNotifier({ getConfig, loadState = () => ({}), saveState = () => {}, send = sendQqNotification, log = () => {}, clock = Date.now }) {
   let state = { armed: false, account: null, offlineSince: null, offlineNotified: false, attempts: 0, nextAttemptAt: 0, lastError: null, lastNotificationAt: null, ...loadState() };
   let busy = false;
+  let generation = 0;
   const persist = () => saveState({ ...state });
   const status = () => ({ armed: state.armed, account: state.account, offlineSince: state.offlineSince, offlineNotified: state.offlineNotified, lastCheckedAt: state.lastCheckedAt || null, lastNotificationAt: state.lastNotificationAt, lastError: state.lastError, nextAttemptAt: state.nextAttemptAt || null });
   async function tick(sample) {
+    if (sample.state === 'stopped' || sample.state === 'stopping') {
+      generation++;
+      state = { ...state, armed: false, account: null, offlineSince: null, offlineNotified: false, attempts: 0, nextAttemptAt: 0, lastError: null, lastCheckedAt: new Date(clock()).toISOString() };
+      persist(); return;
+    }
     if (busy || !getConfig().enabled) return;
     busy = true;
+    const revision = generation;
     try {
       const config = getConfig(), time = clock();
       state.lastCheckedAt = new Date(time).toISOString();
@@ -303,16 +309,18 @@ export function createQqOfflineNotifier({ getConfig, loadState = () => ({}), sav
       persist();
       if (!kind || time < state.nextAttemptAt) return;
       const title = kind === 'offline' ? '【小米粥】QQ 掉线或连接异常' : '【小米粥】QQ 已恢复上线';
-      const labels = { offline: 'QQ 已掉线', waiting: 'QQ 当前等待重新扫码', unreachable: '无法连接 NapCat 或消息接口', 'auth-error': 'NapCat 管理接口鉴权失败' };
+      const labels = { offline: 'QQ 已掉线', waiting: 'QQ 当前等待重新扫码', unreachable: '无法连接 SnowCat 或消息接口', 'auth-error': 'SnowCat 管理接口鉴权失败' };
       const format = value => new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
       const content = [`QQ：${state.account?.nickname || '个人 QQ'}（${state.account?.userId || '未知账号'}）`, `发现异常：${format(state.offlineSince)}`, `${kind === 'offline' ? '提醒' : '恢复'}时间：${format(time)}（北京时间）`, kind === 'offline' ? `状态：${labels[sample.state] || '连接异常'}${sample.error ? `\n原因：${String(sample.error).slice(0, 300)}` : ''}` : `本次异常持续约 ${Math.max(1, Math.round((time - state.offlineSince) / 60000))} 分钟`, kind === 'offline' ? '请打开小米粥「个人 QQ」查看状态，必要时重新扫码。' : 'QQ 已在线，请在小米粥确认消息收发状态。'].join('\n');
       try {
         await send(config, title, content);
+        if (revision !== generation) return;
         state.lastNotificationAt = new Date(clock()).toISOString(); state.lastError = null; state.attempts = 0; state.nextAttemptAt = 0;
         if (kind === 'offline') state.offlineNotified = true;
         else { state.offlineNotified = false; state.offlineSince = null; }
         log('info', `QQ ${kind === 'offline' ? '掉线' : '恢复'}通知已提交至${{ pushplus: 'PushPlus', wecom: '企业微信机器人', email: '邮件服务器' }[config.provider]}`);
       } catch (error) {
+        if (revision !== generation) return;
         state.attempts++; state.nextAttemptAt = clock() + Math.min(300000, 60000 * 2 ** Math.min(state.attempts - 1, 3));
         state.lastError = error.message;
         log('error', `QQ ${kind === 'offline' ? '掉线' : '恢复'}通知发送失败：${error.message}；将自动重试`);

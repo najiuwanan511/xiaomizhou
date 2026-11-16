@@ -6,7 +6,7 @@ services:
       context: .
       dockerfile: Dockerfile.bundled
       args:
-        NAPCAT_BASE_IMAGE: ${NAPCAT_BASE_IMAGE:-xiaomizhou/napcat-runtime:4.18.42-amd64}
+        QQ_BASE_IMAGE: ${QQ_BASE_IMAGE:-xiaomizhou/qq-runtime:3.2.34-53644-amd64}
     container_name: xiaomizhou
     restart: unless-stopped
     ports:

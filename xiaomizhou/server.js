@@ -13,24 +13,27 @@ import { applyRebates, convertAffiliate, rebateConfigured, defaultRebateTemplate
 import { aiConfig, createAiSessions, generateAiReply, normalizeAiConfig, parseAiConfigRequest } from './ai-brain.js';
 import { checkUpdate, installUpdate } from './update-manager.js';
 import { createNapcatManager, qqFramework, parseNapcatConfig, parseQqNotificationConfig, publicQqNotificationConfig, createQqOfflineNotifier, sendQqNotification } from './napcat-manager.js';
-import { bundledRuntimeStatus } from './bundled-runtime.js';
-import { readNapcatUpdateStatus } from './napcat-updater.js';
+import { bundledRuntimeStatus, kernelEnabled } from './bundled-runtime.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.DATA_DIR || path.join(root, 'data');
 const port = Number(process.env.PORT || 8090);
 const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
 let installingUpdate = false;
-const napcatRequests = new Map();
+const kernelRequests = new Map();
 process.on('message', message => {
-  if (message?.type === 'napcat-update-ack') napcatRequests.get(message.id)?.(message.accepted);
+  if (message?.type === 'qq-kernel-result') kernelRequests.get(message.id)?.(message);
 });
-async function requestNapcatUpdate(action, version) {
+async function requestKernelControl(action) {
   const id = crypto.randomUUID();
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { napcatRequests.delete(id); reject(Object.assign(new Error('内核启动器未响应，请重启容器'), { status: 503 })); }, 5000);
-    napcatRequests.set(id, accepted => { clearTimeout(timer); napcatRequests.delete(id); resolve(accepted); });
-    process.send({ type: 'napcat-update', id, action, version });
+    const timer = setTimeout(() => { kernelRequests.delete(id); reject(Object.assign(new Error('内核启动器未响应，请重启容器'), { status: 503 })); }, 15000);
+    kernelRequests.set(id, result => {
+      clearTimeout(timer); kernelRequests.delete(id);
+      if (result.ok) resolve({ ok: true, enabled: result.enabled });
+      else reject(Object.assign(new Error(result.error || 'QQ 内核操作失败'), { status: result.status || 500 }));
+    });
+    process.send({ type: 'qq-kernel-control', id, action });
   });
 }
 fs.mkdirSync(dataDir, { recursive: true });
@@ -189,7 +192,7 @@ async function runQqEvent(event) {
     const retry = failures <= 3;
     db.prepare('UPDATE qq_pending_events SET state=?,failures=?,next_retry_at=? WHERE message_id=?').run(retry ? 'waiting' : 'failed', failures, Date.now() + [30000, 60000, 120000][Math.min(failures - 1, 2)], event.deliveryKey);
     qqStatus.lastError = error.message;
-    log('error', 'qq', `消息 ${event.messageId}: ${error.message}；${retry ? `已安排自动重试 ${failures}/3` : '自动重试已用尽，请查看 NapCat 日志'}`);
+    log('error', 'qq', `消息 ${event.messageId}: ${error.message}；${retry ? `已安排自动重试 ${failures}/3` : '自动重试已用尽，请查看 SnowCat 日志'}`);
     return { status: 502, result: { ...(error.response || { error: error.message }), retryScheduled: retry } };
   }
 }
@@ -288,7 +291,7 @@ function listRules() {
 function qqConfig() {
   try {
     const saved = JSON.parse(getSetting('qq.config', '{}'));
-    return process.env.NAPCAT_BUNDLED === '1' ? { ...saved, enabled: saved.enabled && (saved.framework || 'napcat') === (process.env.QQ_FRAMEWORK || 'napcat'), endpoint: process.env.NAPCAT_ONEBOT_URL } : saved;
+    return process.env.NAPCAT_BUNDLED === '1' ? { ...saved, enabled: saved.enabled && saved.framework === 'snowcat' && kernelEnabled(dataDir), endpoint: process.env.NAPCAT_ONEBOT_URL } : saved;
   }
   catch { return {}; }
 }
@@ -300,17 +303,17 @@ function napcatConfig() {
   let saved = {};
   try { saved = JSON.parse(getSetting('napcat.config', '{}')); } catch { /* use deployment defaults */ }
   const defaults = {
-    framework: qqFramework(process.env.QQ_FRAMEWORK || 'napcat').id,
+    framework: 'snowcat',
     webuiUrl: process.env.NAPCAT_WEBUI_URL || '',
     webuiToken: process.env.NAPCAT_WEBUI_TOKEN || '',
     onebotUrl: process.env.NAPCAT_ONEBOT_URL || qqConfig().endpoint || '',
     callbackBaseUrl: process.env.NAPCAT_CALLBACK_BASE_URL || ''
   };
-  return process.env.NAPCAT_BUNDLED === '1' ? { ...defaults, bundled: true } : { ...defaults, ...saved };
+  return process.env.NAPCAT_BUNDLED === '1' ? { ...defaults, bundled: true } : { ...defaults, ...(saved.framework === 'snowcat' ? saved : {}) };
 }
 function publicNapcatConfig() {
   const config = napcatConfig();
-  if (process.env.NAPCAT_BUNDLED === '1') return { bundled: true, framework: config.framework, webuiUrl: '', webuiToken: '', onebotUrl: '', callbackBaseUrl: '' };
+  if (process.env.NAPCAT_BUNDLED === '1') return { bundled: true, runtimeControl: process.env.QQ_KERNEL_CONTROL === '1' && !!process.send, framework: 'snowcat', webuiUrl: '', webuiToken: '', onebotUrl: '', callbackBaseUrl: '' };
   return { bundled: false, ...config, webuiToken: config.webuiToken ? '********' : '' };
 }
 function qqNotificationConfig() {
@@ -330,7 +333,8 @@ async function monitorQqNotifications() {
   try {
     const management = napcatConfig();
     let sample;
-    if (management.webuiUrl && management.webuiToken) sample = await napcatManager.status();
+    if (process.env.NAPCAT_BUNDLED === '1' && !kernelEnabled(dataDir)) sample = { state: 'stopped' };
+    else if (management.webuiUrl && management.webuiToken) sample = await napcatManager.status();
     else {
       const config = qqConfig();
       if (!config.enabled || !config.endpoint) return;
@@ -343,6 +347,7 @@ async function monitorQqNotifications() {
         } else sample = { state: 'offline' };
       } catch (error) { sample = { state: 'unreachable', error: safeLogMessage(error.message) }; }
     }
+    if (process.env.NAPCAT_BUNDLED === '1' && !kernelEnabled(dataDir)) sample = { state: 'stopped' };
     await qqOfflineNotifier.tick({ ...sample, error: sample.error ? safeLogMessage(sample.error) : null });
   } catch (error) { log('error', 'qq', `掉线通知检测失败：${error.message}`); }
   finally { notificationMonitorBusy = false; }
@@ -354,19 +359,20 @@ let napcatAutoBusy = false;
 let napcatAutoSynced = false;
 let napcatAutoError = null;
 let lastNapcatState;
-let lastNapcatUpdate;
 function observeNapcatStatus(status) {
   const key = `${status.framework}:${status.state}:${status.account?.userId || ''}`;
   if (lastNapcatState === key) return;
   lastNapcatState = key;
-  const labels = { unconfigured: '等待配置连接', waiting: '等待手机 QQ 扫码并确认登录', initializing: '手机已确认，正在初始化 QQ 内核', online: 'QQ 登录成功，账号已在线', offline: 'QQ 已掉线，请等待重连或重新扫码', 'auth-error': '管理接口鉴权失败，请检查 WebUI Token', unreachable: '无法连接 QQ 内核服务，请检查内核运行状态' };
+  const labels = { stopped: 'QQ 内核已停止', stopping: 'QQ 内核正在停止', unconfigured: '等待配置连接', waiting: '等待手机 QQ 扫码并确认登录', initializing: '手机已确认，正在初始化 QQ 内核', online: 'QQ 登录成功，账号已在线', offline: 'QQ 已掉线，请等待重连或重新扫码', 'auth-error': '管理接口鉴权失败，请检查 WebUI Token', unreachable: '无法连接 QQ 内核服务，请检查内核运行状态' };
   log(['offline', 'auth-error', 'unreachable'].includes(status.state) ? 'warn' : 'info', 'napcat', `${labels[status.state] || '登录状态未知'}${status.account?.userId ? `；QQ 号：${status.account.userId}` : ''}${status.error ? `；原因：${status.error}` : ''}`);
 }
 async function syncBundledQq() {
   if (process.env.NAPCAT_BUNDLED !== '1' || napcatAutoBusy || !getSetting('webhookToken')) return;
   napcatAutoBusy = true;
   try {
+    if (!kernelEnabled(dataDir)) { napcatAutoSynced = false; napcatAutoError = null; napcatManager.clear(); return; }
     const status = await napcatManager.status();
+    if (!kernelEnabled(dataDir)) return;
     observeNapcatStatus(status);
     if (status.state !== 'online') { napcatAutoSynced = false; return; }
     if (!napcatAutoSynced || !status.messageConnected) {
@@ -377,6 +383,7 @@ async function syncBundledQq() {
     }
     napcatAutoError = null;
   } catch (error) {
+    if (!kernelEnabled(dataDir)) { napcatAutoSynced = false; napcatAutoError = null; return; }
     if (napcatAutoError !== error.message) log('error', 'napcat', error.message);
     napcatAutoError = error.message;
   } finally { napcatAutoBusy = false; }
@@ -834,27 +841,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
     if (req.method === 'GET' && pathname === '/api/napcat') return json(res, 200, publicNapcatConfig());
-    if (pathname.startsWith('/api/napcat/updates')) {
-      if (napcatConfig().framework === 'snowcat') return fail(res, 409, 'SnowCat 实验内核暂不支持独立在线更新，请重新构建完整镜像；不会下载 NapCat 覆盖 SnowCat');
-      if (process.env.NAPCAT_BUNDLED !== '1' || !process.send) return fail(res, 409, '在线更新需要完整内置 QQ 镜像');
-      if (req.method === 'GET' && pathname === '/api/napcat/updates') {
-        const status = readNapcatUpdateStatus(dataDir);
-        const key = `${status.state}:${status.currentVersion}:${status.latestVersion || ''}`;
-        if (key !== lastNapcatUpdate) {
-          lastNapcatUpdate = key;
-          log(status.state === 'error' ? 'error' : status.state === 'rolled-back' ? 'warn' : 'info', 'napcat', `NapCat 内核 v${status.currentVersion}：${status.message}`);
-        }
-        return json(res, 200, status);
-      }
-      const action = /^\/api\/napcat\/updates\/(check|install|rollback)$/.exec(pathname)?.[1];
-      if (req.method === 'POST' && action) {
-        const input = await body(req);
-        const accepted = await requestNapcatUpdate(action, String(input.version || ''));
-        if (!accepted) return fail(res, 409, '已有内核更新任务正在进行');
-        log('info', 'napcat', `已请求${{ check: '检查 NapCat 更新', install: '升级 NapCat 内核', rollback: '回滚 NapCat 内核' }[action]}`);
-        return json(res, 202, { accepted: true });
-      }
-    }
+    if (pathname.startsWith('/api/napcat/updates')) return fail(res, 409, '已移除 NapCat 更新功能，SnowCat 请更新完整镜像');
     if (req.method === 'PUT' && pathname === '/api/napcat') {
       if (process.env.NAPCAT_BUNDLED === '1') return fail(res, 409, '内置 QQ 由小米粥自动管理，无需填写连接配置');
       const previous = napcatConfig();
@@ -868,23 +855,29 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, publicNapcatConfig());
     }
     if (req.method === 'GET' && pathname === '/api/napcat/status') {
-      const status = await napcatManager.status();
+      const runtime = process.env.NAPCAT_BUNDLED === '1' ? bundledRuntimeStatus(process.env.NAPCAT_STATUS_FILE) : null;
+      const stopped = process.env.NAPCAT_BUNDLED === '1' && !kernelEnabled(dataDir);
+      const status = stopped ? { framework: 'snowcat', configured: true, reachable: false, state: runtime?.state === 'stopping' ? 'stopping' : 'stopped', account: null, qrCode: null, messageConnected: false, checkedAt: new Date().toISOString(), error: null } : await napcatManager.status();
       observeNapcatStatus(status);
-      return json(res, 200, { ...status, notificationStatus: qqOfflineNotifier.status(), lastEventAt: qqStatus.lastEventAt, autoError: napcatAutoError, runtime: process.env.NAPCAT_BUNDLED === '1' ? bundledRuntimeStatus(process.env.NAPCAT_STATUS_FILE) : null });
+      return json(res, 200, { ...status, notificationStatus: qqOfflineNotifier.status(), lastEventAt: qqStatus.lastEventAt, autoError: stopped ? null : napcatAutoError, runtime });
     }
-    if (req.method === 'POST' && pathname === '/api/napcat/restart') {
-      if (process.env.NAPCAT_BUNDLED !== '1' || !process.send) return fail(res, 409, '当前不是内置 QQ 镜像');
-      if (napcatConfig().framework !== 'snowcat' && ['checking', 'downloading', 'extracting', 'switching'].includes(readNapcatUpdateStatus(dataDir).state)) return fail(res, 409, '已有内核更新任务正在进行');
-      process.send({ type: 'napcat-restart' });
-      log('info', 'napcat', '已请求重启 QQ 内核，消息收发将短暂中断');
-      return json(res, 202, { ok: true });
+    const kernelAction = /^\/api\/napcat\/(start|stop|restart)$/.exec(pathname)?.[1];
+    if (req.method === 'POST' && kernelAction) {
+      if (process.env.NAPCAT_BUNDLED !== '1' || process.env.QQ_KERNEL_CONTROL !== '1' || !process.send) return fail(res, 409, '内核启停需要新版完整 SnowCat 镜像，请先更新完整镜像');
+      const result = await requestKernelControl(kernelAction);
+      napcatManager.clear(); napcatAutoSynced = false; napcatAutoError = null;
+      if (kernelAction === 'stop') await qqOfflineNotifier.tick({ state: 'stopped' });
+      log('info', 'napcat', { start: '已启动 SnowCat 内核，正在准备 QQ 登录', stop: '已停止 SnowCat 内核，登录数据已保留，掉线提醒已暂停', restart: '已重启 SnowCat 内核，正在准备 QQ 登录' }[kernelAction]);
+      return json(res, 200, result);
     }
     if (req.method === 'POST' && pathname === '/api/napcat/qrcode/refresh') {
+      if (process.env.NAPCAT_BUNDLED === '1' && !kernelEnabled(dataDir)) return fail(res, 409, '请先启动 QQ 内核');
       const result = await napcatManager.refreshQr();
       log('info', 'napcat', '已请求刷新登录二维码，请使用手机 QQ 扫码');
       return json(res, 200, result);
     }
     if (req.method === 'POST' && pathname === '/api/napcat/connect') {
+      if (process.env.NAPCAT_BUNDLED === '1' && !kernelEnabled(dataDir)) return fail(res, 409, '请先启动 QQ 内核');
       const result = await napcatManager.connect(getSetting('webhookToken'), config => {
         putSetting.run('qq.config', JSON.stringify(config));
         qqStatus.lastError = null;
@@ -896,7 +889,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'PUT' && pathname === '/api/qq/notifications') {
       const config = parseQqNotificationConfig(await body(req), qqNotificationConfig());
       const management = napcatConfig(), bridge = qqConfig();
-      if (config.enabled && !(management.webuiUrl && management.webuiToken) && !(bridge.enabled && bridge.endpoint)) return fail(res, 400, '请先配置个人 QQ 或 NapCat 连接，再开启掉线提醒');
+      if (config.enabled && !(management.webuiUrl && management.webuiToken) && !(bridge.enabled && bridge.endpoint)) return fail(res, 400, '请先配置个人 QQ 或 SnowCat 连接，再开启掉线提醒');
       putSetting.run('qq.notifications', JSON.stringify(config));
       log('info', 'qq', `QQ 掉线提醒${config.enabled ? '已启用' : '已停用'}；渠道：${{ pushplus: 'PushPlus', wecom: '企业微信机器人', email: '邮件' }[config.provider]}`);
       void monitorQqNotifications();

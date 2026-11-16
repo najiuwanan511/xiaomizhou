@@ -1,3 +1,7 @@
+# 历史版本说明
+
+本文描述已发布 v0.3.18–v0.3.20 的 NapCat 集成。当前开发分支已移除 NapCat；构建、启停和升级请使用 [SnowCat 说明](snowcat-integrated.md)。下面的旧源码构建命令仅适用于对应历史标签。
+
 # 小米粥内置 NapCat 与在线更新
 
 v0.3.20 完整镜像包含 NapCat 4.18.42 + Linux QQ 3.2.34-53644。归档通过固定 SHA-256 校验，发布流水线在 Linux Runner 上执行完整镜像构建与真实内核登录二维码检查，成功后才发布镜像和 Release。请以 [Releases](https://github.com/najiuwanan511/xiaomizhou/releases) 和对应 Actions 成功记录确认版本是否已上线。自动化检查不登录个人账号，实际扫码确认及消息收发仍需在目标设备验证。

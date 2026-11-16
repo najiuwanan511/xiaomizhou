@@ -20,15 +20,15 @@ jobs:
         run: |
           npm install -g pnpm@11.25.0
           pnpm install --frozen-lockfile
-          node --test
+          node --test test/*.test.js
       - name: Build complete image and verify real QQ login QR
         env:
-          NAPCAT_BASE_IMAGE: ${{ vars.NAPCAT_BASE_IMAGE }}
+          QQ_BASE_IMAGE: ${{ vars.QQ_BASE_IMAGE }}
         run: |
-          if [ -z "$NAPCAT_BASE_IMAGE" ]; then
-            NAPCAT_BASE_IMAGE="$(node xiaomizhou/scripts/prepare-napcat-image.js)"
+          if [ -z "$QQ_BASE_IMAGE" ]; then
+            QQ_BASE_IMAGE="$(node xiaomizhou/scripts/prepare-qq-image.js)"
           fi
-          docker build -f xiaomizhou/Dockerfile.bundled --build-arg "NAPCAT_BASE_IMAGE=$NAPCAT_BASE_IMAGE" -t xiaomizhou-bundled-check ./xiaomizhou
+          docker build -f xiaomizhou/Dockerfile.bundled --build-arg "QQ_BASE_IMAGE=$QQ_BASE_IMAGE" -t xiaomizhou-bundled-check ./xiaomizhou
           docker run -d --name xiaomizhou-qq-smoke --shm-size=256m -p 127.0.0.1:18090:8090 xiaomizhou-bundled-check
           trap 'docker rm -fv xiaomizhou-qq-smoke >/dev/null 2>&1 || true' EXIT
           if ! node xiaomizhou/scripts/smoke-bundled.js; then

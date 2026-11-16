@@ -6,7 +6,7 @@ import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
 
 const root = path.resolve(import.meta.dirname, '..');
-const lock = JSON.parse(fs.readFileSync(path.join(root, 'napcat-runtime.lock.json'), 'utf8')).snowcat;
+const lock = JSON.parse(fs.readFileSync(path.join(root, 'qq-runtime.lock.json'), 'utf8')).snowcat;
 const output = path.resolve(process.argv[2] || path.join(root, 'data/snowcat-source'));
 if (fs.existsSync(output)) throw new Error('源码输出目录已存在，请使用新的构建目录');
 fs.mkdirSync(path.dirname(output), { recursive: true });

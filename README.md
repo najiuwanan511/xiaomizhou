@@ -2,7 +2,7 @@
 
 独立运行的消息机器人管理后台。当前实现系统管理、本地插件开发、个人 QQ、QQ 官方机器人、企业微信自建应用的成员私聊、GPT/Gemini 对话，以及按规则转发和商品链接返利转链。
 
-## NapCat 群转发
+## 已发布 v0.3.20：NapCat 群转发
 
 v0.3.18 将 Linux QQ、NapCat Shell 内核及原生库一起打进小米粥：一个容器，后台直接扫码，内部自动配置消息收发。包含 NapCat 4.18.42、Linux QQ 3.2.34-53644，以及内核在线更新、失败自动回滚和手动回滚。
 
@@ -29,13 +29,13 @@ v0.3.20 在「个人 QQ → QQ 掉线提醒」中增加 PushPlus（微信接收�
 
 首次检测到 QQ 在线后才开始判断掉线，首次扫码前不会误报。邮件使用 SMTP SSL/TLS 直连，通常为 465 端口。通知详情、渠道设置与限制见 [掉线提醒说明](xiaomizhou/docs/qq-offline-notifications.md)。
 
-## SnowCat QQ 框架适配（实验开发，尚未发布）
+## SnowCat 单内核与启停（开发分支，尚未发布）
 
-开发分支增加 NapCat／SnowCat 选择、扫码与状态适配，以及分开保存的内核配置和 QQ 登录数据。保留现有 NapCat；SnowCat 不使用 NapCat 的内核更新源。此功能需要新的完整镜像启动器，尚未提供正式安装版本。
+当前开发版已移除 NapCat 运行包、框架切换及 NapCat 在线更新，只内置 SnowCat。个人 QQ 页面提供「启动内核」「停止内核」「重启内核」。停止会结束 QQ 和虚拟显示进程，保留登录数据，暂停个人 QQ 掉线提醒与消息重试；重启小米粥仍保持关闭，需主动启动才恢复。其他渠道和后台继续运行。
 
-实验分支已通过 98 项自动化测试、官方 v6.0.0 鉴权检查及 Linux x86_64 完整镜像构建，真实 QQ + SnowCat 已启动并通过小米粥接口生成登录二维码（[验证记录](https://github.com/najiuwanan511/xiaomizhou/actions/runs/43853523544)）。尚未登录真实账号，飞牛实机扫码、收发和掉线稳定性仍需验证。
+本次涉及启动器、QQ 运行包和依赖，必须升级完整镜像，不能仅在旧版后台在线更新。旧 v0.3.20 安装命令仍安装 NapCat，不包含此功能；下方 NapCat 版本说明为已发布历史。
 
-已复现 SnowCat 当前主分支的管理凭证校验缺陷，因此使用未经修改的官方 v6.0.0 标签源码，并由小米粥提供强随机签名密钥。当前保留正式版 NapCat；构建与独立试用方法见 [SnowCat 适配与验证记录](xiaomizhou/docs/snowcat-integrated.md)。
+采用未经修改的官方 SnowCat v6.0.0 固定源码和 Linux QQ 3.2.34-53644。前一版适配已通过 Linux x86_64 真实二维码检查（[记录](https://github.com/najiuwanan511/xiaomizhou/actions/runs/43853523544)）；本次增加停止、重启容器保持关闭和恢复启动检查，验收状态见 [SnowCat 构建与验证说明](xiaomizhou/docs/snowcat-integrated.md)。账号实机收发和长期稳定性仍需验证。
 
 ## 自动视频解析（开发中，尚未发布）
 
@@ -52,7 +52,7 @@ v0.3.20 在「个人 QQ → QQ 掉线提醒」中增加 PushPlus（微信接收�
 v0.3.17 起，发送 `time`、`/time`、`时间` 或 `当前时间`，直接返回设备系统当前时间，
 显示北京时间（UTC+8），无需 AI。QQ 官方机器人在群中使用 `@机器人 time`。
 
-## 飞牛 OS 安装
+## 飞牛 OS 安装（已发布 v0.3.20）
 
 已启用 Docker 的飞牛设备可通过 SSH 一键安装：
 
@@ -98,9 +98,9 @@ volumes:
 
 从 v0.3.17 及更早版本升级，需要更换完整镜像；旧版后台在线更新无法安装新增依赖和 QQ 运行环境。迁移时保留原数据卷或挂载原数据目录，不要新建空卷替代旧数据。
 
-也可从源码构建，步骤见 [完整内核构建说明](xiaomizhou/docs/napcat-integrated.md#从已锁定的归档构建)。仓库的 `Dockerfile`/`compose.yml` 是轻量开发环境，不包含 QQ；内置 NapCat 必须使用 `Dockerfile.bundled`/`compose.bundled.yml`。
+也可从源码构建，步骤见 [当前完整内核构建说明](xiaomizhou/docs/snowcat-integrated.md)。仓库的 `Dockerfile`/`compose.yml` 是轻量开发环境，不包含 QQ；当前开发版内置 SnowCat 使用 `Dockerfile.bundled`/`compose.bundled.yml`。
 
-## 更新命令
+## 已发布版本的更新命令
 
 在飞牛 Docker 的 Compose 项目中，将 `image` 改成 [Releases](https://github.com/najiuwanan511/xiaomizhou/releases) 中已成功发布的目标版本标签，拉取并重建容器，保留 `xiaomizhou-data` 卷。`latest` 也指向最近一次成功发布的镜像；使用固定标签便于确认安装版本。
 

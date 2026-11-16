@@ -1,3 +1,5 @@
+当前开发版内核为 SnowCat，完整镜像直接扫码并自动配置。见 [SnowCat 说明](snowcat-integrated.md)。以下为历史 NapCat 手动接入教程；转发规则仍适用于兼容 OneBot v11 的 SnowCat。
+
 # NapCat 群对群转发
 
 v0.3.18 开发中的完整镜像支持在小米粥内扫码登录、自动配置连接和在线更新内核（尚待真实镜像验收），见 [在小米粥内扫码登录 NapCat](napcat-integrated.md)。下文为已有 NapCat 的手动接入方式；原官方安装链接和镜像当前可能不可用。

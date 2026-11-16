@@ -1,23 +1,32 @@
-# The builder supplies a verified NapCat Shell + Linux QQ image. End users only
-# install the resulting xiaomizhou image; this is never a second running service.
-ARG NAPCAT_BASE_IMAGE
-FROM ${NAPCAT_BASE_IMAGE} AS qq-runtime
+# The verified archive supplies Linux QQ only. NapCat is never copied to the final image.
+ARG QQ_BASE_IMAGE
+FROM ${QQ_BASE_IMAGE} AS qq-runtime
 USER root
-ARG NAPCAT_DIST_DIR=/app/napcat
 ARG QQ_INSTALL_DIR=/opt/QQ
-RUN if [ ! -f "$NAPCAT_DIST_DIR/napcat.mjs" ] && [ -f /app/NapCat.Shell.zip ]; then \
-      mkdir -p "$NAPCAT_DIST_DIR" && unzip -q /app/NapCat.Shell.zip -d "$NAPCAT_DIST_DIR"; fi
-RUN test -f "$NAPCAT_DIST_DIR/napcat.mjs" && test -d "$NAPCAT_DIST_DIR/native" \
-    && test -f "$NAPCAT_DIST_DIR/node_modules/express/package.json" \
-    && test -f "$NAPCAT_DIST_DIR/node_modules/ws/package.json" \
-    && test -f "$QQ_INSTALL_DIR/qq" \
-    && test -f "$QQ_INSTALL_DIR/resources/app/wrapper.node" \
-    && mkdir -p /xiaomizhou-bundle/napcat /xiaomizhou-bundle/QQ \
-    && tar -C "$NAPCAT_DIST_DIR" --exclude='./config' --exclude='./cache' --exclude='./logs' -cf /tmp/napcat-runtime.tar . \
-    && tar -xf /tmp/napcat-runtime.tar -C /xiaomizhou-bundle/napcat \
-    && cp -a "$QQ_INSTALL_DIR/." /xiaomizhou-bundle/QQ/
-RUN mkdir -p /xiaomizhou-bundle/napcat/defaults \
-    && if [ -f "$NAPCAT_DIST_DIR/config/napcat.json" ]; then cp "$NAPCAT_DIST_DIR/config/napcat.json" /xiaomizhou-bundle/napcat/defaults/napcat.json; fi
+RUN test -f "$QQ_INSTALL_DIR/qq" && test -f "$QQ_INSTALL_DIR/resources/app/wrapper.node" \
+    && mkdir -p /xiaomizhou-bundle/QQ && cp -a "$QQ_INSTALL_DIR/." /xiaomizhou-bundle/QQ/
+
+FROM node:24-bookworm-slim AS snowcat-build
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git python3 make g++ \
+    && rm -rf /var/lib/apt/lists/* && npm install -g pnpm@9.15.9
+WORKDIR /build
+COPY qq-runtime.lock.json ./
+COPY scripts/prepare-snowcat-source.js ./scripts/
+RUN node scripts/prepare-snowcat-source.js /source
+WORKDIR /source
+RUN pnpm install --frozen-lockfile
+# Shell/WebUI consume upstream TypeScript directly. The separate plugin SDK
+# declaration target is not a runtime dependency and is not shipped here.
+RUN export NAPCAT_VERSION="$(node -p 'require("/build/qq-runtime.lock.json").snowcat.version')" \
+    && pnpm run build:webui \
+    && pnpm run build:shell
+WORKDIR /source/packages/snowcat-shell/dist
+RUN npm install --omit=dev --ignore-scripts --no-package-lock express@5.1.0 ws@8.18.3 \
+    && mkdir -p defaults && cp config/napcat.json defaults/napcat.json \
+    && rm -rf config && cp /source/LICENSE ./LICENSE \
+    && node -e "require('fs').writeFileSync('SOURCE.txt', JSON.stringify(require('/build/qq-runtime.lock.json').snowcat,null,2))" \
+    && test -f native/napi2native/napi2native.linux.x64.node
+
 
 FROM node:24-bookworm-slim AS dependencies
 WORKDIR /build
@@ -31,19 +40,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libnotify4 libsecret-1-0 libxkbcommon0 libgl1 libegl1 libopengl0 fonts-noto-cjk ffmpeg tini \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=qq-runtime /xiaomizhou-bundle/QQ /opt/QQ
-COPY --from=qq-runtime /xiaomizhou-bundle/napcat /opt/xiaomizhou-napcat
+COPY --from=snowcat-build /source/packages/snowcat-shell/dist /opt/xiaomizhou-snowcat
 COPY scripts/qq-bootstrap.cjs /opt/QQ/resources/app/xiaomizhou-bootstrap.cjs
-# Change QQ's entry only. Do not edit or expose a modified NapCat distribution.
+# Change QQ's entry only. Do not edit or expose a modified SnowCat distribution.
 RUN node -e "const fs=require('fs');const p='/opt/QQ/resources/app/package.json';const v=JSON.parse(fs.readFileSync(p));v.main='./xiaomizhou-bootstrap.cjs';fs.writeFileSync(p,JSON.stringify(v))" \
     && ldd /opt/QQ/qq > /tmp/qq-libraries.txt \
     && ! grep -q 'not found' /tmp/qq-libraries.txt
 WORKDIR /opt/xiaomizhou
 COPY --from=dependencies /build/node_modules ./node_modules
-COPY package.json launcher.js bundled-runtime.js napcat-updater.js napcat-runtime.lock.json server.js plugin-runner.js qq-bridge.js napcat-manager.js qqbot-bridge.js wecom-bridge.js rebate-automation.js ai-brain.js update-manager.js ./
+COPY package.json launcher.js bundled-runtime.js qq-runtime.lock.json server.js plugin-runner.js qq-bridge.js napcat-manager.js qqbot-bridge.js wecom-bridge.js rebate-automation.js ai-brain.js update-manager.js ./
 COPY public ./public
 COPY third-party /usr/share/doc/xiaomizhou/third-party
-RUN node -e "const fs=require('fs');const lock=require('./napcat-runtime.lock.json');const qq=require('/opt/QQ/resources/app/package.json');if(qq.version!==lock.qqVersion||!fs.readFileSync('/opt/xiaomizhou-napcat/napcat.mjs','utf8').includes(JSON.stringify(lock.version)))throw Error('Runtime version does not match lock')"
-ENV PORT=8090 DATA_DIR=/app/data NAPCAT_BUNDLED=1
+RUN node -e "const fs=require('fs');const lock=require('./qq-runtime.lock.json');const qq=require('/opt/QQ/resources/app/package.json');if(qq.version!==lock.qqVersion||!fs.readFileSync('/opt/xiaomizhou-snowcat/napcat.mjs','utf8').includes(JSON.stringify(lock.snowcat.version)))throw Error('Runtime version does not match lock')"
+ENV PORT=8090 DATA_DIR=/app/data NAPCAT_BUNDLED=1 QQ_FRAMEWORK=snowcat
 EXPOSE 8090
 VOLUME /app/data
 ENTRYPOINT ["/usr/bin/tini", "--"]
