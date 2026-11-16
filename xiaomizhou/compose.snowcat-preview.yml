@@ -2,7 +2,7 @@
 # The original external volume must already exist; never create an empty replacement.
 services:
   xiaomizhou:
-    image: ghcr.io/najiuwanan511/xiaomizhou:snowcat-preview
+    image: ghcr.io/najiuwanan511/xiaomizhou@sha256:e38202dc986a46bc97ca8bd7722334fc90b77dc743f78f472c1356341951876c
     container_name: xiaomizhou
     restart: unless-stopped
     ports:

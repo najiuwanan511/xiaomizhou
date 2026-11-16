@@ -1,6 +1,17 @@
 # SnowCat 单内核与启停
 
-开发分支已删除 NapCat 运行包和更新器，只保留 SnowCat。尚未发布正式 SnowCat 镜像，旧 v0.3.20 安装命令仍安装 NapCat。
+开发分支已删除 NapCat 运行包和更新器，只保留 SnowCat。已发布 Linux x86_64 SnowCat 试用镜像（[发布记录](https://github.com/najiuwanan511/xiaomizhou/actions/runs/43858715129)），正式 latest 和 v0.3.20 标签保持不变。旧 v0.3.20 安装命令仍安装 NapCat。
+
+## 飞牛一键升级
+
+适用于此前使用默认一键命令安装的 xiaomizhou 项目，保留现有命名数据卷：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/najiuwanan511/xiaomizhou/codex/snowcat-adapter/xiaomizhou/compose.snowcat-preview.yml | sudo docker compose -p xiaomizhou -f - up -d --pull always
+```
+
+升级配置固定镜像摘要 sha256:e38202dc986a46bc97ca8bd7722334fc90b77dc743f78f472c1356341951876c，只包含已验证的 Linux amd64 镜像。沿用 8090 端口，原 xiaomizhou_xiaomizhou-data 卷必须已存在；不存在则报错，不创建替代空卷。自定义项目、端口或绑定目录应在原 Compose 中仅替换镜像，保留所有原挂载。更新后使用原管理员账号登录，再在「个人 QQ」重新扫码。
+
 
 ## 使用方式
 
@@ -39,7 +50,7 @@ docker build -f Dockerfile.bundled --build-arg "QQ_BASE_IMAGE=$base" -t xiaomizh
 docker compose -p xiaomizhou-snowcat-test -f compose.snowcat.yml up -d
 ```
 
-访问 http://飞牛IP:18090。试用配置使用独立数据卷。当前没有可直接拉取的 SnowCat 镜像，必须自行构建。不要将正式 v0.3.20 加环境变量当作 SnowCat 版本。
+访问 http://飞牛IP:18090。试用配置使用独立数据卷。此配置用于本地源码构建测试；普通安装可使用上方已发布的试用镜像。不要将正式 v0.3.20 加环境变量当作 SnowCat 版本。
 
 qq-runtime.lock.json 固定 SnowCat 源码提交、SHA-256、大小及 Linux QQ 版本。旧 NapCat 发行归档仅作为提取 Linux QQ 的构建输入，最终镜像不复制 NapCat 目录或 Shell ZIP。SnowCat 上游仍使用 napcat.mjs、config/napcat.json 和 NAPCAT_* 名称，这些属于 SnowCat 原始接口，并非混入第二套内核。
 
@@ -49,7 +60,7 @@ qq-runtime.lock.json 固定 SnowCat 源码提交、SHA-256、大小及 Linux QQ 
 
 本地浏览器使用模拟 QQ 管理服务和真实进程控制器验证了启动、停止、重启按钮及刷新后状态：停止后清除二维码、暂停消息状态、仅启用启动按钮。模拟界面验收不代替上述 Linux 真实运行验收。
 
-GitHub Actions 的 SnowCat experiment 仅使用临时容器，不上传镜像、不创建正式 Release。真实账号扫码、文字/图片/视频收发、掉线提醒与长期稳定性仍需实机验收。SnowCat 同样使用 QQ 运行时注入，不能保证避免外挂检测。
+GitHub Actions 的 SnowCat experiment 在应用测试、上游鉴权和临时容器真实启停验收全部成功后，上传 snowcat-提交短号 与 snowcat-preview 两种试用标签，不改正式 latest 或版本标签，不创建正式 Release。真实账号扫码、文字/图片/视频收发、掉线提醒与长期稳定性仍需实机验收。SnowCat 同样使用 QQ 运行时注入，不能保证避免外挂检测。
 
 ## 许可与数据保护
 

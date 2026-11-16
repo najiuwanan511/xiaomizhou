@@ -29,7 +29,7 @@ v0.3.20 在「个人 QQ → QQ 掉线提醒」中增加 PushPlus（微信接收�
 
 首次检测到 QQ 在线后才开始判断掉线，首次扫码前不会误报。邮件使用 SMTP SSL/TLS 直连，通常为 465 端口。通知详情、渠道设置与限制见 [掉线提醒说明](xiaomizhou/docs/qq-offline-notifications.md)。
 
-## SnowCat 单内核与启停（开发分支，尚未发布）
+## SnowCat 单内核与启停（试用镜像）
 
 当前开发版已移除 NapCat 运行包、框架切换及 NapCat 在线更新，只内置 SnowCat。个人 QQ 页面提供「启动内核」「停止内核」「重启内核」。停止会结束 QQ 和虚拟显示进程，保留登录数据，暂停个人 QQ 掉线提醒与消息重试；重启小米粥仍保持关闭，需主动启动才恢复。其他渠道和后台继续运行。
 
@@ -37,7 +37,17 @@ v0.3.20 在「个人 QQ → QQ 掉线提醒」中增加 PushPlus（微信接收�
 
 采用未经修改的官方 SnowCat v6.0.0 固定源码和 Linux QQ 3.2.34-53644。本次已通过 95 项应用测试、Linux x86_64 真实二维码、停止进程、重启容器保持关闭和恢复启动检查（[记录](https://github.com/najiuwanan511/xiaomizhou/actions/runs/43857416908)），详情见 [SnowCat 构建与验证说明](xiaomizhou/docs/snowcat-integrated.md)。账号实机收发和长期稳定性仍需验证。
 
-## 自动视频解析（开发中，尚未发布）
+试用镜像已发布，适用于 Intel/AMD x86_64 飞牛。若此前使用本 README 的默认一键命令安装，可在飞牛 SSH 执行下面命令，拉取完整 SnowCat 镜像并重建容器，保留原数据卷：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/najiuwanan511/xiaomizhou/codex/snowcat-adapter/xiaomizhou/compose.snowcat-preview.yml | sudo docker compose -p xiaomizhou -f - up -d --pull always
+```
+
+命令固定已验证的镜像摘要，沿用 xiaomizhou 项目、8090 端口和 xiaomizhou_xiaomizhou-data 卷。原卷必须存在，找不到时会报错，不会创建空卷替代。自定义项目名、端口或绑定目录的安装，请在原 Compose 配置中替换镜像并保留原挂载。登录小米粥的原管理员账号后，进入「个人 QQ」重新扫码；原 NapCat 登录状态不会迁移给 SnowCat。
+
+[试用镜像构建与发布记录](https://github.com/najiuwanan511/xiaomizhou/actions/runs/43858715129)。正式 latest 和 v0.3.20 标签保持不变，试用镜像尚未通过真实账号长期收发与稳定性验收。
+
+## 自动视频解析（尚未正式发布）
 
 新增「视频解析」页面，开启后直接识别个人 QQ 私聊或群聊中的抖音、快手、皮皮虾分享链接，无需添加“解析”等命令。支持完整分享文案和常见 QQ 分享卡片；成功后先回复视频，再回复从原平台读取的完整标题，不附加分享口令、作者标签或推广文案。
 
