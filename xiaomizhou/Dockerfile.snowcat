@@ -10,8 +10,9 @@ COPY scripts/prepare-snowcat-source.js ./scripts/
 RUN node scripts/prepare-snowcat-source.js /source
 WORKDIR /source
 RUN pnpm install --frozen-lockfile
+# Shell/WebUI consume upstream TypeScript directly. The separate plugin SDK
+# declaration target is not a runtime dependency and is not shipped here.
 RUN export NAPCAT_VERSION="$(node -p 'require("/build/napcat-runtime.lock.json").snowcat.version')" \
-    && pnpm --filter snowcat-types run build \
     && pnpm run build:webui \
     && pnpm run build:shell
 WORKDIR /source/packages/snowcat-shell/dist

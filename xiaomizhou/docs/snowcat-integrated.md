@@ -41,6 +41,16 @@ docker build -f Dockerfile.bundled --build-arg "NAPCAT_BASE_IMAGE=$base" -t xiao
 docker build -f Dockerfile.snowcat --build-arg XIAOMIZHOU_BASE_IMAGE=xiaomizhou/qq-experiment:local -t xiaomizhou/snowcat-experiment:local .
 ```
 
+构建只执行上游 `build:webui` 和 `build:shell` 运行包目标。官方标签的插件 SDK 声明生成目标另有类型解析错误，SDK 不参与 Shell/WebUI 运行，也不随本实验镜像发布；不修改源码来修复或掩盖它。
+
+在 Intel/AMD x86_64 飞牛设备上自行构建后，可用独立项目启动测试：
+
+```bash
+docker compose -p xiaomizhou-snowcat-test -f compose.snowcat.yml up -d
+```
+
+访问 `http://飞牛IP:18090`。此配置使用单独的测试数据卷，不覆盖原配置；试用同一个 QQ 账号前停用原 QQ 内核，避免两边同时登录。当前没有可直接拉取的 SnowCat 实验镜像，不能把正式 v0.3.20 镜像加上环境变量就当作已安装 SnowCat。
+
 GitHub Actions 的 `SnowCat experiment` 分别检查适配测试、上游真实鉴权实现、完整 Linux 镜像构建及真实二维码。只使用临时测试容器，不上传镜像、不创建正式 Release。鉴权失败或无法生成二维码时必须报告失败。
 
 扫码图片生成不等于账号已经登录。个人账号实际扫码、群聊和私聊的文字/图片/视频收发、掉线提醒及长期稳定性仍需真实账号验收，当前未通过。SnowCat 同样使用 QQ 运行时注入，不能保证避免“外挂检测”或踢下线。

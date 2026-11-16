@@ -1,0 +1,17 @@
+# Local experiment image only. Build using docs/snowcat-integrated.md first.
+services:
+  xiaomizhou:
+    image: xiaomizhou/snowcat-experiment:local
+    environment:
+      TZ: Asia/Shanghai
+      QQ_FRAMEWORK: snowcat
+    ports:
+      - "18090:8090"
+    volumes:
+      - snowcat-test-data:/app/data
+    shm_size: 256mb
+    stop_grace_period: 15s
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  snowcat-test-data:
