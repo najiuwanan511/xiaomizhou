@@ -33,7 +33,9 @@ v0.3.20 在「个人 QQ → QQ 掉线提醒」中增加 PushPlus（微信接收�
 
 开发分支增加 NapCat／SnowCat 选择、扫码与状态适配，以及分开保存的内核配置和 QQ 登录数据。保留现有 NapCat；SnowCat 不使用 NapCat 的内核更新源。此功能需要新的完整镜像启动器，尚未提供正式安装版本。
 
-已复现 SnowCat 当前主分支的管理凭证校验缺陷，因此改用未经修改的官方 v6.0.0 标签源码，鉴权独立复现已通过，并由小米粥提供强随机签名密钥。Linux 镜像和实际账号收发仍需验收；当前不建议替换正在使用的内核。详见 [SnowCat 适配与验证记录](xiaomizhou/docs/snowcat-integrated.md)。
+实验分支已通过 98 项自动化测试、官方 v6.0.0 鉴权检查及 Linux x86_64 完整镜像构建，真实 QQ + SnowCat 已启动并通过小米粥接口生成登录二维码（[验证记录](https://github.com/najiuwanan511/xiaomizhou/actions/runs/43853523544)）。尚未登录真实账号，飞牛实机扫码、收发和掉线稳定性仍需验证。
+
+已复现 SnowCat 当前主分支的管理凭证校验缺陷，因此使用未经修改的官方 v6.0.0 标签源码，并由小米粥提供强随机签名密钥。当前保留正式版 NapCat；构建与独立试用方法见 [SnowCat 适配与验证记录](xiaomizhou/docs/snowcat-integrated.md)。
 
 ## 自动视频解析（开发中，尚未发布）
 

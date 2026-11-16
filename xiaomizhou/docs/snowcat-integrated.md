@@ -33,7 +33,16 @@ node scripts/check-snowcat-auth.js data/snowcat-source --require-working
 
 ## Linux 构建验证
 
-`Dockerfile.snowcat` 在完整小米粥镜像上加入未修改的 SnowCat Shell、Linux 原生库及 WebUI，沿用已经锁定的 Linux QQ 3.2.34-53644。源码地址、提交、压缩包大小及 SHA-256 锁定在 `napcat-runtime.lock.json` 的 `snowcat` 字段；它不代表 QQ/SnowCat 组合已通过兼容性验收。
+2026-11-16 已在 GitHub Ubuntu runner 的 Linux x86_64 容器通过：
+
+- 小米粥 98 项自动化测试。
+- 锁定官方 v6.0.0 的真实鉴权函数检查。
+- 完整 QQ 基础镜像、SnowCat WebUI 和 Shell 运行包构建。
+- 真实 QQ + SnowCat 启动，并通过小米粥的管理接口取得可显示的真实登录二维码。未登录任何 QQ 账号。
+
+[成功运行记录](https://github.com/najiuwanan511/xiaomizhou/actions/runs/43853523544)，运行代码提交 `831b89fb984f7a37fe68c976fd5290e79709664d`。这证明该 Linux 组合可启动并进入扫码阶段，不代表已经通过飞牛实机或账号稳定收发验收。
+
+`Dockerfile.snowcat` 在完整小米粥镜像上加入未修改的 SnowCat Shell、Linux 原生库及 WebUI，沿用已经锁定的 Linux QQ 3.2.34-53644。源码地址、提交、压缩包大小及 SHA-256 锁定在 `napcat-runtime.lock.json` 的 `snowcat` 字段。
 
 ```bash
 base="$(node scripts/prepare-napcat-image.js)"
